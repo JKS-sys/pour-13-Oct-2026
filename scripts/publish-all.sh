@@ -72,7 +72,9 @@ for r in "${REPOS[@]}"; do [ -d "$r" ] || die "$r/ is missing next to pour/ (unz
 say "repositories"
 for r in "${REPOS[@]}"; do
   name="$r$SUFFIX"
-  if gh api "repos/$OWNER/$name" >/dev/null 2>&1; then ok "$OWNER/$name exists"
+  if gh api "repos/$OWNER/$name" >/dev/null 2>&1; then
+    ok "$OWNER/$name exists - left as it is (set REPUSH=1 to replace its history with this folder)"
+    [ "${REPUSH:-0}" = 1 ] || continue
   else
     gh repo create "$OWNER/$name" --public >/dev/null 2>&1 && ok "created $OWNER/$name" || die "could not create $OWNER/$name (token needs the repo scope)"
   fi
@@ -94,7 +96,9 @@ done
 
 # 2. Pour release
 say "release v$VERSION of pour"
-if ! gh release view "v$VERSION" -R "$OWNER/pour$SUFFIX" >/dev/null 2>&1; then
+if gh release view "v$VERSION" -R "$OWNER/pour$SUFFIX" >/dev/null 2>&1 && [ "$(gh release view "v$VERSION" -R "$OWNER/pour$SUFFIX" --json assets --jq '.assets|length')" -ge 8 ]; then ok "release v$VERSION already has its files"
+else
+  gh release delete "v$VERSION" -R "$OWNER/pour$SUFFIX" -y >/dev/null 2>&1 || true
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   if [ -f pour/dist/latest.json ] && [ -f pour/dist/SHA256SUMS ]; then
     cp pour/dist/* "$tmp/"; ok "using pour/dist/"
@@ -114,7 +118,7 @@ if ! gh release view "v$VERSION" -R "$OWNER/pour$SUFFIX" >/dev/null 2>&1; then
   fi
   notes=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("notes","Pour "+sys.argv[2]))' "$tmp/latest.json" "$VERSION")
   gh release create "v$VERSION" "$tmp"/* -R "$OWNER/pour$SUFFIX" --title "Pour $VERSION" --notes "$notes" --latest >/dev/null && ok "release v$VERSION published" || die "release failed"
-else ok "release v$VERSION already exists"; fi
+fi
 
 # 3. Registry release
 say "registry release"
