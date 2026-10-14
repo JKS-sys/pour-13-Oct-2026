@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all
+      - run: cargo build --release -p pour
+      - name: Smoke test (search and info against the live registry)
+        shell: bash
+        run: |
+          export POUR_PREFIX="$RUNNER_TEMP/pour"
+          ./target/release/pour init --dry-run
+          ./target/release/pour update || true
+          ./target/release/pour search json | head -5 || true
+          ./target/release/pour info jq || true
+      - name: Real install (Linux and macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export POUR_PREFIX="$RUNNER_TEMP/pour"
+          mkdir -p "$POUR_PREFIX"
+          ./target/release/pour install jq
+          "$POUR_PREFIX/bin/jq" --version
+          echo '{"ok": true}' | "$POUR_PREFIX/bin/jq" .ok
+
+  cross:
+    name: cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-pc-windows-gnu,x86_64-unknown-freebsd,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: pip3 install ziglang && cargo install cargo-zigbuild
+      - run: for t in aarch64-apple-darwin x86_64-pc-windows-gnu x86_64-unknown-freebsd aarch64-unknown-linux-musl; do cargo zigbuild -p pour --target $t; done

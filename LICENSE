@@ -1,0 +1,39 @@
+Pour - Source-available licence
+
+Copyright (c) 2026 Jagadeesh Kumar S. All rights reserved.
+
+Pour, its source code, binaries, registry data formats, documentation,
+artwork and the name "Pour" (together, "the Software") are the property of
+Jagadeesh Kumar S.
+
+You may:
+  1. download, install and use the Software on any number of your own
+     computers, for any purpose, free of charge;
+  2. read the source code and build it for your own use;
+  3. view and fork the official repositories on GitHub to the extent
+     GitHub's Terms of Service require, and send fixes back as pull requests;
+  4. link to https://ipconfig.co.network/pour and to the official
+     repositories under https://github.com/JKS-sys.
+
+You may not, without written permission from Jagadeesh Kumar S:
+  1. otherwise copy, mirror, redistribute or sell the source code or
+     binaries, in whole or in part, modified or unmodified;
+  2. publish a package manager, tool or service derived from the Software,
+     or use its code, index format or registry pipeline in another project;
+  3. remove or alter copyright, author or licence notices, or present the
+     Software as your own;
+  4. use the name "Pour", its logo or its artwork for another product.
+
+Third-party components are the property of their respective owners and
+remain under their own licences, listed in THIRD-PARTY-NOTICES.txt. Packages
+installed with Pour come from Homebrew's bottle farm and from the publishers
+of the applications; they are not part of the Software and keep their own
+licences.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE
+USE OF THE SOFTWARE.
+
+Contact: JKS.sys@icloud.com

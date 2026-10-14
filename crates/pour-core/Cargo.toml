@@ -1,0 +1,33 @@
+[package]
+name = "pour-core"
+description = "Core engine of Pour: index, resolver, bottles, casks, store, relocation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+ureq.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+webpki-roots.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
+rayon.workspace = true
+memchr.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+regex-lite.workspace = true
+glob.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

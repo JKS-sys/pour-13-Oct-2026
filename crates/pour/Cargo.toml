@@ -1,0 +1,27 @@
+[package]
+name = "pour"
+description = "Pour: the Homebrew-compatible package manager that installs in milliseconds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+default-run = "pour"
+
+[[bin]]
+name = "pour"
+path = "src/main.rs"
+
+[dependencies]
+pour-core = { path = "../pour-core" }
+clap.workspace = true
+clap_complete.workspace = true
+indicatif.workspace = true
+console.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
