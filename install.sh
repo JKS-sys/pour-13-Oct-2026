@@ -118,16 +118,18 @@ POUR_PREFIX="$PREFIX" "$PREFIX/bin/pour" update || say "could not fetch the inde
 # so it costs nothing at start-up, and it only adds the folder once.
 pathline="[ -d \"$PREFIX/bin\" ] && case \":\$PATH:\" in *\":$PREFIX/bin:\"*) ;; *) export PATH=\"$PREFIX/bin:$PREFIX/sbin:\$PATH\" POUR_PREFIX=\"$PREFIX\" ;; esac"
 shell_name=$(basename "${SHELL:-sh}")
+# The start-up files are kept as positional parameters, never in a word-split string:
+# a home folder with spaces in its name ("/Users/Jagadeesh Kumar S") must stay one path.
 case "$shell_name" in
-  zsh)  rcs="$HOME/.zshenv $HOME/.zshrc"; line="$pathline" ;;
-  bash) rcs="$HOME/.bashrc $HOME/.bash_profile"; line="$pathline" ;;
-  fish) rcs="$HOME/.config/fish/config.fish"; line="fish_add_path -gP $PREFIX/bin $PREFIX/sbin; set -gx POUR_PREFIX $PREFIX" ;;
-  *)    rcs="$HOME/.profile"; line="$pathline" ;;
+  zsh)  set -- "$HOME/.zshenv" "$HOME/.zshrc"; line="$pathline" ;;
+  bash) set -- "$HOME/.bashrc" "$HOME/.bash_profile"; line="$pathline" ;;
+  fish) set -- "$HOME/.config/fish/config.fish"; line="fish_add_path -gP \"$PREFIX/bin\" \"$PREFIX/sbin\"; set -gx POUR_PREFIX \"$PREFIX\"" ;;
+  *)    set -- "$HOME/.profile"; line="$pathline" ;;
 esac
 if [ -n "${POUR_NO_MODIFY_PATH:-}" ]; then
   say "add this to your shell's start-up file:  $line"
 else
-  for rc in $rcs; do
+  for rc in "$@"; do
     if grep -qs "# Pour PATH" "$rc" 2>/dev/null; then
       say "$rc already puts Pour on PATH"
     else
