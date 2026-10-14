@@ -149,15 +149,12 @@ fn check_depends_on(cask: &Cask, platform: &Platform, summary: &mut CaskSummary)
         }
     }
     if let Some(arch) = v.get("arch").and_then(|a| a.as_array()) {
-        let ok =
-            arch.iter().any(
-                |a| match (a.get("type").and_then(|t| t.as_str()), platform.arch) {
-                    (Some("arm"), Arch::Arm64) => true,
-                    (Some("intel"), Arch::X86_64) => true,
-                    (Some("x86_64"), Arch::X86_64) => true,
-                    _ => false,
-                },
-            );
+        let ok = arch.iter().any(|a| {
+            matches!(
+                (a.get("type").and_then(|t| t.as_str()), platform.arch),
+                (Some("arm"), Arch::Arm64) | (Some("intel" | "x86_64"), Arch::X86_64)
+            )
+        });
         if !ok && !arch.is_empty() {
             return Err(CaskError::WrongArch {
                 token: cask.token.clone(),

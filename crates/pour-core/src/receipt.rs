@@ -145,12 +145,6 @@ pub struct Receipt {
     pub links_len: usize,
 }
 
-impl Default for Kind {
-    fn default() -> Self {
-        Kind::Formula
-    }
-}
-
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

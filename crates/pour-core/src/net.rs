@@ -166,11 +166,25 @@ pub fn get_text(agent: &ureq::Agent, url: &str, headers: &[(&str, &str)]) -> Res
 }
 
 /// POST a JSON body; returns (status, body) for any HTTP answer, Err only when there was none.
-pub fn post_json(agent: &ureq::Agent, url: &str, body: &serde_json::Value) -> Result<(u16, String)> {
-    match agent.post(url).set("content-type", "application/json").send_string(&body.to_string()) {
-        Ok(r) => { let c = r.status(); Ok((c, r.into_string().unwrap_or_default())) }
+pub fn post_json(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<(u16, String)> {
+    match agent
+        .post(url)
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+    {
+        Ok(r) => {
+            let c = r.status();
+            Ok((c, r.into_string().unwrap_or_default()))
+        }
         Err(ureq::Error::Status(c, r)) => Ok((c, r.into_string().unwrap_or_default())),
-        Err(e) => Err(NetError::Http { url: url.into(), msg: e.to_string() }),
+        Err(e) => Err(NetError::Http {
+            url: url.into(),
+            msg: e.to_string(),
+        }),
     }
 }
 

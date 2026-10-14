@@ -575,10 +575,10 @@ fn version_at_least(v: &str, min: &[u32]) -> bool {
     if parts.is_empty() || v.is_empty() {
         return false;
     }
-    for i in 0..min.len() {
+    for (i, &m) in min.iter().enumerate() {
         let a = parts.get(i).copied().unwrap_or(0);
-        if a != min[i] {
-            return a > min[i];
+        if a != m {
+            return a > m;
         }
     }
     true

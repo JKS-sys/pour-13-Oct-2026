@@ -19,7 +19,7 @@ fn pour(prefix: &PathBuf, args: &[&str]) -> (bool, String, String) {
     )
 }
 
-fn registry_json(dir: &PathBuf) -> (PathBuf, PathBuf) {
+fn registry_json(dir: &std::path::Path) -> (PathBuf, PathBuf) {
     let formulae = serde_json::json!([
         {"name": "jq", "full_name": "jq", "tap": "homebrew/core", "desc": "Lightweight and flexible command-line JSON processor", "homepage": "https://jqlang.github.io/jq/", "license": "MIT",
          "versions": {"stable": "1.8.2"}, "revision": 0, "bottle": {"stable": {"rebuild": 1, "root_url": "https://ghcr.io/v2/homebrew/core", "files": {
@@ -48,7 +48,7 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("pour");
     std::fs::create_dir_all(&prefix).unwrap();
-    let (f, c) = registry_json(&dir.path().to_path_buf());
+    let (f, c) = registry_json(dir.path());
     let out = dir.path().join("index.pour.gz");
     let (ok, stdout, stderr) = pour(
         &prefix,
@@ -144,7 +144,7 @@ fn brewfile_parsing() {
     std::fs::create_dir_all(&prefix).unwrap();
     let bf = dir.path().join("Brewfile");
     std::fs::write(&bf, text).unwrap();
-    let (f, c) = registry_json(&dir.path().to_path_buf());
+    let (f, c) = registry_json(dir.path());
     let out = dir.path().join("i.pour");
     pour(
         &prefix,

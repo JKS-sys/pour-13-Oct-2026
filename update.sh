@@ -99,9 +99,11 @@ echo "$VERSION" > VERSION
 # ---------------------------------------------------------------- tests
 if [ "$TESTS" = 1 ] && (only build || only release); then
   say "tests"
-  cargo fmt --all -- --check 2>/dev/null || { warn "formatting differs; running cargo fmt"; cargo fmt --all; }
+  cargo fmt --all -- --check >/dev/null 2>&1 || { warn "formatting differs; running cargo fmt"; cargo fmt --all; }
   cargo clippy --all-targets -q -- -D warnings 2>/dev/null || warn "clippy had findings (not fatal)"
-  cargo test -q 2>&1 | tail -3
+  # one line for the whole workspace (cargo prints a result per crate; the last is the empty doc-tests one)
+  out=$(cargo test -q 2>&1) || { printf '%s\n' "$out" | tail -30; die "tests failed"; }
+  printf '%s\n' "$out" | awk '/^test result:/ {p+=$4; f+=$6} END {printf "  %d tests passed, %d failed\n", p, f}' 
 fi
 
 # ---------------------------------------------------------------- build
@@ -125,8 +127,15 @@ if only build || only release; then
   (cd dist && for f in pour-*; do
      if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi
    done > SHA256SUMS)
-  notes=$(git log --no-merges --pretty='- %s' "$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD" 2>/dev/null | grep -v '^- sync ' | head -30)
-  [ -n "$notes" ] || notes="- Maintenance release."
+  # Release notes from the commits since the last tag. A folder unpacked from a zip has no .git
+  # yet (the release step creates it): then there is no history to read, and that must not stop
+  # the script — under `set -eo pipefail` a failing git inside $(…) would end it right here.
+  notes=""
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    since=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD 2>/dev/null || true)
+    notes=$( { git log --no-merges --pretty='- %s' ${since:+"$since..HEAD"} 2>/dev/null || true; } | { grep -v '^- sync ' || true; } | head -30)
+  fi
+  [ -n "$notes" ] || notes="- Pour $VERSION."
   python3 - "$VERSION" "$notes" <<'PY' > dist/latest.json
 import json, sys, os, hashlib, datetime
 version, notes = sys.argv[1], sys.argv[2]
@@ -152,9 +161,11 @@ if only release && command -v gh >/dev/null && [ -n "$GH_TOKEN" ]; then
   # A fresh zip has no .git: push-github.sh fetches GitHub's newest commit, commits this folder on
   # top of it and pushes a fast-forward (never a rewrite). Then the tag.
   COMMIT_MSG="release $VERSION" retry 3 bash scripts/push-github.sh "${REPO#*/}" || warn "source push failed"
-  git tag -f "v$VERSION" >/dev/null
-  AUTH="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-  retry 3 git -c "http.extraHeader=$AUTH" push -q -f origin "v$VERSION"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git tag -f "v$VERSION" >/dev/null
+    AUTH="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+    retry 3 git -c "http.extraHeader=$AUTH" push -q -f origin "v$VERSION" || warn "tag push failed (gh release creates the tag)"
+  fi
   if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "v$VERSION" dist/* -R "$REPO" --clobber
   else
@@ -189,7 +200,7 @@ if only site && [ -n "$SITE_DIR" ] && command -v node >/dev/null; then
 fi
 if only details; then
   say "README numbers"; python3 scripts/readme-stats.py || warn "could not refresh the README stats"
-  if ! git diff --quiet README.md; then git add README.md && git commit -qm "README: numbers from the newest index and benchmark" && retry 3 git push -q 2>/dev/null || warn "README commit not pushed"; fi
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git diff --quiet README.md; then git add README.md && git commit -qm "README: numbers from the newest index and benchmark" && retry 3 git push -q 2>/dev/null || warn "README commit not pushed"; fi
 fi
 if only details && command -v gh >/dev/null && [ -n "$GH_TOKEN" ]; then
   say "GitHub repository details"; bash scripts/repo-details.sh || warn "could not set every repo's details"

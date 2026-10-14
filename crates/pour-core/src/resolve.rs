@@ -158,6 +158,7 @@ pub fn plan(
     let mut state: HashMap<String, u8> = HashMap::new(); // 1 = visiting, 2 = done
     let requested_names: HashSet<String> = requested.iter().map(|(_, f)| f.name.clone()).collect();
 
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         name: &str,
         on_request: bool,

@@ -14,6 +14,11 @@ use pour_core::resolve::{self, PlanOptions};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+/// Names split into formulae and (source, cask) pairs.
+type Split = (Vec<String>, Vec<(String, pour_core::model::Cask)>);
+/// Brewfile entries: formulae, casks, taps (name, url).
+pub type Brewfile = (Vec<String>, Vec<String>, Vec<(String, Option<String>)>);
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Ctx<'a> {
@@ -92,12 +97,7 @@ impl Ctx<'_> {
     }
 
     /// Split names into formulae and casks according to the index.
-    fn classify(
-        &self,
-        reg: &Registry,
-        names: &[String],
-        kind: Option<Kind>,
-    ) -> Result<(Vec<String>, Vec<(String, pour_core::model::Cask)>)> {
+    fn classify(&self, reg: &Registry, names: &[String], kind: Option<Kind>) -> Result<Split> {
         let mut formulae = Vec::new();
         let mut casks = Vec::new();
         for n in names {
@@ -804,47 +804,97 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
         }
         Command::Apps => {
             // Live: pour-apps plus whatever the dashboard switched on since the last `pour update`.
-            let url = std::env::var("POUR_APPS_URL").unwrap_or_else(|_| "https://ipconfig.co.network/pour/apps/index.json".into());
+            let url = std::env::var("POUR_APPS_URL")
+                .unwrap_or_else(|_| "https://ipconfig.co.network/pour/apps/index.json".into());
             let v = pour_core::net::get_json(&pour_core::net::agent(), &url, &[])?;
-            let casks = v.get("casks").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+            let casks = v
+                .get("casks")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
             if cli.json {
                 let out: Vec<serde_json::Value> = casks.iter().map(|c| serde_json::json!({"token": c["token"], "name": c["name"].get(0), "version": c["version"], "desc": c["desc"], "source": c.pointer("/pour/source").cloned().unwrap_or_else(|| "pour-apps".into())})).collect();
                 println!("{}", serde_json::to_string_pretty(&out)?);
                 return Ok(());
             }
-            let installed: std::collections::HashSet<String> = receipt::installed_casks(&ctx.paths).into_iter().map(|i| i.receipt.name).collect();
-            ui.println(format!("{} {} {}", arrow(), style("Apps by Jagadeesh Kumar S").bold(), style(format!("({})", casks.len())).dim()));
+            let installed: std::collections::HashSet<String> = receipt::installed_casks(&ctx.paths)
+                .into_iter()
+                .map(|i| i.receipt.name)
+                .collect();
+            ui.println(format!(
+                "{} {} {}",
+                arrow(),
+                style("Apps by Jagadeesh Kumar S").bold(),
+                style(format!("({})", casks.len())).dim()
+            ));
             for c in &casks {
                 let token = c["token"].as_str().unwrap_or("");
                 let name = c["name"].get(0).and_then(|x| x.as_str()).unwrap_or(token);
                 let ver = c["version"].as_str().unwrap_or("");
                 let new = c.pointer("/pour/source").and_then(|x| x.as_str()) == Some("dashboard");
-                let mark = if installed.contains(token) { style(" ✔").green().to_string() } else { String::new() };
+                let mark = if installed.contains(token) {
+                    style(" ✔").green().to_string()
+                } else {
+                    String::new()
+                };
                 ui.println(format!(
                     "  {}{} {}{}  {}",
                     style(format!("{token:<10}")).cyan().bold(),
                     mark,
                     style(ver).magenta(),
-                    if new { style(" new").yellow().to_string() } else { String::new() },
+                    if new {
+                        style(" new").yellow().to_string()
+                    } else {
+                        String::new()
+                    },
                     style(c["desc"].as_str().unwrap_or(name)).dim()
                 ));
             }
-            ui.println(format!("{} pour install --cask <app>", style("Install:").bold()));
+            ui.println(format!(
+                "{} pour install --cask <app>",
+                style("Install:").bold()
+            ));
         }
-        Command::Register { app, name, line, version, feed } => {
-            let ok = app.len() >= 2 && app.len() <= 24 && app.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && app.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        Command::Register {
+            app,
+            name,
+            line,
+            version,
+            feed,
+        } => {
+            let ok = app.len() >= 2
+                && app.len() <= 24
+                && app.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && app
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
             if !ok {
                 return Err(err("the app id must be 2–24 lowercase letters, digits or dashes, starting with a letter"));
             }
-            let url = std::env::var("POUR_REGISTER_URL").unwrap_or_else(|_| "https://ipconfig.co.network/pour/api/apps/register".into());
+            let url = std::env::var("POUR_REGISTER_URL")
+                .unwrap_or_else(|_| "https://ipconfig.co.network/pour/api/apps/register".into());
             let body = serde_json::json!({"app": app, "name": name, "line": line, "version": version, "download_url": feed, "platform": ctx.platform.describe()});
-            let (code, text) = pour_core::net::post_json(&pour_core::net::agent(), &url, &body).map_err(|e| err(format!("could not reach the dashboard: {e}")))?;
+            let (code, text) = pour_core::net::post_json(&pour_core::net::agent(), &url, &body)
+                .map_err(|e| err(format!("could not reach the dashboard: {e}")))?;
             let j: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             if code >= 400 {
-                return Err(err(j["message"].as_str().or(j["error"].as_str()).unwrap_or("the dashboard refused it").to_string()));
+                return Err(err(j["message"]
+                    .as_str()
+                    .or(j["error"].as_str())
+                    .unwrap_or("the dashboard refused it")
+                    .to_string()));
             }
             let status = j["status"].as_str().unwrap_or("pending");
-            ui.println(format!("{} {} {} on the dashboard ({status})", style("✓").green(), style(app).cyan().bold(), if j["added"].as_bool().unwrap_or(false) { "registered" } else { "is already" }));
+            ui.println(format!(
+                "{} {} {} on the dashboard ({status})",
+                style("✓").green(),
+                style(app).cyan().bold(),
+                if j["added"].as_bool().unwrap_or(false) {
+                    "registered"
+                } else {
+                    "is already"
+                }
+            ));
             if status != "on" {
                 ui.println("  The owner switches it on in the Apps tab; then `pour update && pour install --cask ".to_string() + app + "` works everywhere.");
             }
@@ -1626,7 +1676,7 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
 }
 
 /// `brew "x"`, `cask "y"`, `tap "a/b"[, "url"]`; everything else ignored.
-pub fn parse_brewfile(text: &str) -> (Vec<String>, Vec<String>, Vec<(String, Option<String>)>) {
+pub fn parse_brewfile(text: &str) -> Brewfile {
     let mut brews = Vec::new();
     let mut casks = Vec::new();
     let mut taps = Vec::new();
