@@ -56,6 +56,71 @@ pub struct Source {
 
 pub struct Registry {
     pub sources: Vec<Source>,
+    /// Full records of the core index, gzipped on disk and opened only when
+    /// a command needs more than names, versions and dependencies.
+    details_path: Option<PathBuf>,
+    details: std::cell::RefCell<DetailsCache>,
+}
+
+/// `details.pour`: the full core records in 512 independently gzipped
+/// buckets (by name hash), so one lookup inflates ~20 KB instead of 10 MB.
+///   b"PDET\x01\0\0\0" · u32 n · n × (u64 offset, u32 len) · gzip buckets
+#[derive(Default)]
+struct DetailsCache {
+    file: Option<memmap2::Mmap>,
+    opened: bool,
+    buckets: std::collections::HashMap<u32, Option<Index>>,
+}
+
+const DET_MAGIC: &[u8; 8] = b"PDET\x01\0\0\0";
+const DET_BUCKETS: u32 = 512;
+
+fn det_bucket(name: &str) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for b in name.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h % DET_BUCKETS
+}
+
+fn write_details(
+    path: &Path,
+    formulae: Vec<crate::model::Formula>,
+    casks: Vec<crate::model::Cask>,
+) -> std::io::Result<()> {
+    let mut builders: Vec<IndexBuilder> = (0..DET_BUCKETS).map(|_| IndexBuilder::new()).collect();
+    for f in formulae {
+        builders[det_bucket(&f.name) as usize].add_formula(f);
+    }
+    for c in casks {
+        builders[det_bucket(&c.token) as usize].add_cask(c);
+    }
+    let mut blobs = Vec::with_capacity(DET_BUCKETS as usize);
+    for b in builders {
+        let raw = b
+            .build()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        blobs.push(gzip_level(&raw, 9)?);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(DET_MAGIC);
+    out.extend_from_slice(&DET_BUCKETS.to_le_bytes());
+    let mut off = (8 + 4 + 12 * DET_BUCKETS as usize) as u64;
+    for b in &blobs {
+        out.extend_from_slice(&off.to_le_bytes());
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        off += b.len() as u64;
+    }
+    for b in &blobs {
+        out.extend_from_slice(b);
+    }
+    write_atomic(path, &out)
+}
+
+/// Where the full (compressed) core records live, beside the lean index.
+pub fn details_file(paths: &Paths) -> PathBuf {
+    paths.state().join("details.pour")
 }
 
 /// Tap list on disk (`taps.json`); the defaults when the file is missing.
@@ -121,7 +186,53 @@ impl Registry {
                 }
             }
         }
-        Ok(Registry { sources })
+        let d = details_file(paths);
+        Ok(Registry {
+            sources,
+            details_path: d.is_file().then_some(d),
+            details: std::cell::RefCell::new(DetailsCache::default()),
+        })
+    }
+
+    /// The full record of a core package, inflating only its bucket.
+    fn detail(&self, kind: Kind, name: &str) -> Option<Pkg> {
+        let mut c = self.details.borrow_mut();
+        if !c.opened {
+            c.opened = true;
+            c.file = self.details_path.as_ref().and_then(|p| {
+                let f = std::fs::File::open(p).ok()?;
+                // SAFETY: the file is replaced atomically (rename), never modified in place.
+                unsafe { memmap2::Mmap::map(&f) }.ok()
+            });
+        }
+        let b = det_bucket(name);
+        if !c.buckets.contains_key(&b) {
+            let idx = c.file.as_ref().and_then(|m| {
+                if m.len() < 12 || &m[..8] != DET_MAGIC {
+                    return None;
+                }
+                let n = u32::from_le_bytes(m[8..12].try_into().ok()?);
+                if b >= n {
+                    return None;
+                }
+                let e = 12 + 12 * b as usize;
+                let off = u64::from_le_bytes(m.get(e..e + 8)?.try_into().ok()?) as usize;
+                let len = u32::from_le_bytes(m.get(e + 8..e + 12)?.try_into().ok()?) as usize;
+                let mut raw = Vec::new();
+                MultiGzDecoder::new(m.get(off..off + len)?)
+                    .read_to_end(&mut raw)
+                    .ok()?;
+                Index::from_vec(raw).ok()
+            });
+            c.buckets.insert(b, idx);
+        }
+        c.buckets.get(&b)?.as_ref()?.find(kind, name)
+    }
+
+    /// Like `find`, but answers from the lean index only (names, versions,
+    /// dependencies) — no decompression. Enough for `outdated` and `deps`.
+    pub fn find_lean(&self, spec: &str, kind: Option<Kind>) -> Option<(String, Pkg)> {
+        self.find_in(spec, kind, false)
     }
 
     pub fn core(&self) -> &Index {
@@ -131,8 +242,12 @@ impl Registry {
     /// `name`, `tap/name` or `user/repo/name`; formula before cask unless a
     /// kind is forced.
     pub fn find(&self, spec: &str, kind: Option<Kind>) -> Option<(String, Pkg)> {
+        self.find_in(spec, kind, true)
+    }
+
+    fn find_in(&self, spec: &str, kind: Option<Kind>, full: bool) -> Option<(String, Pkg)> {
         let (tap, name) = split_spec(spec);
-        for s in &self.sources {
+        for (i, s) in self.sources.iter().enumerate() {
             if let Some(t) = tap {
                 if !source_matches(&s.name, t) {
                     continue;
@@ -143,6 +258,15 @@ impl Registry {
                 None => s.index.find_any(name),
             };
             if let Some(p) = hit {
+                if full && i == 0 && self.details_path.is_some() {
+                    let key = match &p {
+                        Pkg::Formula(f) => (Kind::Formula, f.name.clone()),
+                        Pkg::Cask(c) => (Kind::Cask, c.token.clone()),
+                    };
+                    if let Some(fp) = self.detail(key.0, &key.1) {
+                        return Some((s.name.clone(), fp));
+                    }
+                }
                 return Some((s.name.clone(), p));
             }
         }
@@ -360,27 +484,83 @@ pub fn slim_index_file(
     let idx = Index::open(path).map_err(|e| std::io::Error::other(e.to_string()))?;
     let tags = platform.bottle_tags();
     let vars = platform.cask_variations();
-    let mut b = IndexBuilder::new();
-    b.meta = idx.meta();
+    let mut full_f = Vec::new();
+    let mut full_c = Vec::new();
+    let mut lean = IndexBuilder::new();
+    lean.meta = idx.meta();
+    lean.lean = true;
     for i in 0..idx.len(Kind::Formula) {
         if let Ok(Pkg::Formula(mut f)) = idx.get(Kind::Formula, i) {
             f.bottles.retain(|bt| tags.contains(&bt.tag));
-            b.add_formula(f);
+            lean.add_formula(lean_formula(&f));
+            full_f.push(f);
         }
     }
     for i in 0..idx.len(Kind::Cask) {
         if let Ok(Pkg::Cask(mut c)) = idx.get(Kind::Cask, i) {
             c.variations.retain(|v| vars.contains(&v.tag));
-            b.add_cask(c);
+            lean.add_cask(lean_cask(&c));
+            full_c.push(c);
         }
     }
     drop(idx);
-    let bytes = b
+    let lean = lean
         .build()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let n = bytes.len();
-    write_atomic(path, &bytes)?;
-    Ok(n)
+    let details = path.with_file_name("details.pour");
+    write_details(&details, full_f, full_c)?;
+    let _ = std::fs::remove_file(path.with_file_name("details.pour.gz"));
+    write_atomic(path, &lean)?;
+    Ok(lean.len()
+        + std::fs::metadata(&details)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0))
+}
+
+fn gzip_level(data: &[u8], level: u32) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+    e.write_all(data)?;
+    e.finish()
+}
+
+/// What every quick command needs: names, versions, descriptions, deps.
+fn lean_formula(f: &crate::model::Formula) -> crate::model::Formula {
+    crate::model::Formula {
+        name: f.name.clone(),
+        full_name: f.full_name.clone(),
+        tap: f.tap.clone(),
+        desc: f.desc.clone(),
+        version: f.version.clone(),
+        revision: f.revision,
+        version_scheme: f.version_scheme,
+        aliases: f.aliases.clone(),
+        oldnames: f.oldnames.clone(),
+        deps: f.deps.clone(),
+        uses_from_macos: f.uses_from_macos.clone(),
+        linux_deps: f.linux_deps.clone(),
+        keg_only: f.keg_only,
+        deprecated: f.deprecated,
+        disabled: f.disabled,
+        ..Default::default()
+    }
+}
+
+fn lean_cask(c: &crate::model::Cask) -> crate::model::Cask {
+    crate::model::Cask {
+        token: c.token.clone(),
+        full_token: c.full_token.clone(),
+        tap: c.tap.clone(),
+        names: c.names.clone(),
+        old_tokens: c.old_tokens.clone(),
+        desc: c.desc.clone(),
+        version: c.version.clone(),
+        auto_updates: c.auto_updates,
+        deprecated: c.deprecated,
+        disabled: c.disabled,
+        livecheck_url: c.livecheck_url.clone(),
+        ..Default::default()
+    }
 }
 
 /// Refresh the core index and every tap.
@@ -449,7 +629,7 @@ pub fn remove_tap_file(paths: &Paths, name: &str) {
 pub fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
     use flate2::write::GzEncoder;
     use std::io::Write;
-    let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::best());
+    let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::new(6));
     enc.write_all(data)?;
     enc.finish()
 }

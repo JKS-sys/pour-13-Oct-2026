@@ -73,6 +73,8 @@ pub struct Index {
     casks: Block,
     generated_at: u64,
     meta: (usize, usize),
+    /// Search lines in original case (lean local index): hits show them as is.
+    kept_case: bool,
 }
 
 /// Offsets of one block's tables inside the file.
@@ -141,6 +143,10 @@ fn parse_block(d: &[u8], at: usize) -> Result<Block, IndexError> {
     })
 }
 
+fn memchr_sub(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
 #[derive(Debug, Clone)]
 pub struct Hit {
     pub kind: Kind,
@@ -179,12 +185,14 @@ impl Index {
         }
         let formulae = parse_block(d, f_off)?;
         let casks = parse_block(d, c_off)?;
+        let kept_case = memchr_sub(&d[m_off..m_off + m_len], b"\"search_case\":\"kept\"");
         Ok(Index {
             data,
             formulae,
             casks,
             generated_at,
             meta: (m_off, m_len),
+            kept_case,
         })
     }
 
@@ -313,9 +321,18 @@ impl Index {
             Some(Kind::Cask) => &[Kind::Cask],
             None => &[Kind::Formula, Kind::Cask],
         };
+        let mut low = String::new();
         for &k in kinds {
             for i in 0..self.len(k) {
-                let line = self.search_line(k, i);
+                let orig = self.search_line(k, i);
+                let line: &str = if self.kept_case {
+                    low.clear();
+                    low.push_str(orig);
+                    low.make_ascii_lowercase();
+                    &low
+                } else {
+                    orig
+                };
                 if !words.iter().all(|w| line.contains(w)) {
                     continue;
                 }
@@ -350,6 +367,12 @@ impl Index {
                 if k == Kind::Cask {
                     score = score.saturating_sub(1); // formulae first on ties
                 }
+                let (name, desc) = if self.kept_case {
+                    let mut op = orig.split('\x1f');
+                    (op.next().unwrap_or(""), op.next().unwrap_or(""))
+                } else {
+                    (name, desc)
+                };
                 hits.push(Hit {
                     kind: k,
                     index: i,
@@ -361,8 +384,8 @@ impl Index {
         }
         hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));
         hits.truncate(limit);
-        // The search text is lower-cased; show the real description.
-        for h in &mut hits {
+        // The search text of a shared index is lower-cased; show the real description.
+        for h in hits.iter_mut().filter(|_| !self.kept_case) {
             if let Ok(p) = self.get(h.kind, h.index) {
                 h.desc = p.desc().to_string();
                 h.name = p.name().to_string();
@@ -416,6 +439,9 @@ pub struct IndexBuilder {
     formulae: Vec<Formula>,
     casks: Vec<Cask>,
     pub meta: serde_json::Value,
+    /// Lean local index: search lines keep their case and carry the text
+    /// (description, aliases, names) that the records then leave out.
+    pub lean: bool,
 }
 
 struct Table {
@@ -459,8 +485,10 @@ impl IndexBuilder {
         (self.formulae.len(), self.casks.len())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_block<T, N, R, S, A>(
         out: &mut Vec<u8>,
+        keep_case: bool,
         items: &mut [T],
         name: N,
         rec: R,
@@ -493,7 +521,11 @@ impl IndexBuilder {
             let bytes =
                 postcard::to_allocvec(&rec(it)).map_err(|e| IndexError::Decode(e.to_string()))?;
             recs.push(&bytes);
-            searches.push(search(it).to_ascii_lowercase().as_bytes());
+            if keep_case {
+                searches.push(search(it).as_bytes());
+            } else {
+                searches.push(search(it).to_ascii_lowercase().as_bytes());
+            }
             for a in aliases(it) {
                 let a = a.to_ascii_lowercase();
                 if !a.is_empty() && a != n {
@@ -526,6 +558,14 @@ impl IndexBuilder {
     }
 
     pub fn build(mut self) -> Result<Vec<u8>, IndexError> {
+        let lean = self.lean;
+        if lean {
+            if let serde_json::Value::Object(m) = &mut self.meta {
+                m.insert("search_case".into(), "kept".into());
+            } else {
+                self.meta = serde_json::json!({"search_case": "kept"});
+            }
+        }
         let mut out = vec![0u8; HEADER];
         out[..8].copy_from_slice(MAGIC);
         let now = std::time::SystemTime::now()
@@ -536,9 +576,20 @@ impl IndexBuilder {
         let f_off = out.len() as u64;
         Self::write_block(
             &mut out,
+            lean,
             &mut self.formulae,
             |f| f.name.clone(),
-            |f| Rec::F(f.clone()),
+            |f| {
+                let mut f = f.clone();
+                if lean {
+                    f.desc.clear();
+                    f.aliases.clear();
+                    f.oldnames.clear();
+                    f.full_name.clear();
+                    f.tap.clear();
+                }
+                Rec::F(f)
+            },
             |f| {
                 let mut al = f.aliases.clone();
                 al.extend(f.oldnames.iter().cloned());
@@ -560,9 +611,20 @@ impl IndexBuilder {
         let c_off = out.len() as u64;
         Self::write_block(
             &mut out,
+            lean,
             &mut self.casks,
             |c| c.token.clone(),
-            |c| Rec::C(c.clone()),
+            |c| {
+                let mut c = c.clone();
+                if lean {
+                    c.desc.clear();
+                    c.names.clear();
+                    c.old_tokens.clear();
+                    c.full_token.clear();
+                    c.tap.clear();
+                }
+                Rec::C(c)
+            },
             |c| {
                 format!(
                     "{}\x1f{}\x1f{}\x1f{}",

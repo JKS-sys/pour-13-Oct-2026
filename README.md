@@ -120,7 +120,7 @@ Every release ships `SHA256SUMS`, and [`/pour/releases/latest.json`](https://ipc
 
 ## Storage
 
-Pour keeps as little as it can: a 2.6–3.3 MB binary, a ~10 MB index trimmed to your machine's bottle tags and macOS versions at every `pour update`, and the packages themselves — unpacked once into the store. Kegs are APFS clones of the store on macOS and symlinks on Linux, so a package never sits on disk twice, and the compressed bottle is deleted the moment it is in the store (set `POUR_KEEP_DOWNLOADS=1` to keep it). `pour env` prints the exact figures; `pour cleanup` removes store entries nothing uses any more.
+Pour keeps as little as it can. Its own files: a 2.4–3.2 MB binary, a 2.3 MB lean index (names, versions, descriptions, dependencies — memory-mapped, so `search`, `info` and `outdated` answer in a few milliseconds) and 3.5 MB of full package records split into 512 small compressed buckets, of which a command inflates only the ones it needs. Both are trimmed to your machine's bottle tags and macOS versions at every `pour update`. Packages are unpacked once into the store; kegs are APFS clones on macOS and symlinks on Linux, so nothing sits on disk twice, and the downloaded bottle is deleted as soon as it is in the store (`POUR_KEEP_DOWNLOADS=1` keeps it). `pour env` prints the exact figures; `pour cleanup` removes store entries nothing uses any more.
 
 ## Use
 

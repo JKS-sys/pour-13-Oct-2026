@@ -37,7 +37,7 @@ hex = "0.4"
 tempfile = "3"
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"

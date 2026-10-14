@@ -294,7 +294,7 @@ pub fn outdated(reg: &Registry, paths: &Paths) -> Vec<(receipt::Installed, Formu
         if !i.active || i.receipt.pinned {
             continue;
         }
-        if let Some((_, Pkg::Formula(f))) = reg.find(&i.receipt.name, Some(Kind::Formula)) {
+        if let Some((_, Pkg::Formula(f))) = reg.find_lean(&i.receipt.name, Some(Kind::Formula)) {
             if f.pkg_version() != i.receipt.version {
                 out.push((i, f));
             }

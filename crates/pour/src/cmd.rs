@@ -1067,7 +1067,10 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     .unwrap_or(0);
                 let index_bytes = std::fs::metadata(ctx.paths.index_file())
                     .map(|m| m.len())
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    + std::fs::metadata(pour_core::registry::details_file(&ctx.paths))
+                        .map(|m| m.len())
+                        .unwrap_or(0);
                 println!(
                     "store:      {} entries · {} (kegs are {} of it, so nothing is stored twice)",
                     entries.len(),
