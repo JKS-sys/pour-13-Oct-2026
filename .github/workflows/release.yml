@@ -79,5 +79,5 @@ jobs:
         run: |
           for f in dist/*; do
             ct=application/octet-stream; case "$f" in *.json) ct=application/json;; *.sh) ct=text/plain;; esac
-            for try in 1 2 3; do npx --yes wrangler@4 r2 object put "pour-registry/releases/$(basename "$f")" --file "$f" --content-type "$ct" --remote && break; sleep $((try*5)); done
+            for try in 1 2 3; do npx --yes wrangler@4 r2 object put "pour-registry-13-oct-2026/releases/$(basename "$f")" --file "$f" --content-type "$ct" --remote && break; sleep $((try*5)); done
           done

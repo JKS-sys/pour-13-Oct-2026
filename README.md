@@ -66,6 +66,12 @@ Pour installs the creator's own apps on macOS, Windows, Linux and FreeBSD throug
 
 [▶ Watch with sound (MP4)](docs/demo-apps.mp4)
 
+**Remove Pour** (packages, store, index, the PATH lines and the link; apps it placed in /Applications stay):
+
+```sh
+curl -fsSL https://ipconfig.co.network/pour/uninstall | sh
+```
+
 ## Screenshots
 
 <table>

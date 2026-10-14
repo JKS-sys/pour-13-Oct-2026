@@ -54,6 +54,13 @@ retry() { # retry <tries> <cmd...> — for Cloudflare's occasional 5xx
 
 OWNER=JKS-sys
 REPO=$OWNER/pour-13-Oct-2026   # repositories carry their date suffix
+R2_BUCKET=${POUR_R2_BUCKET:-pour-registry-13-oct-2026}   # R2 names are lowercase; same date suffix
+MIRROR_FEED=https://ipconfig.co.network/pour/releases/latest.json
+# vmax a b … → the highest dotted version among the non-empty arguments
+vmax() { python3 -c 'import sys
+v=[a for a in sys.argv[1:] if a]
+k=lambda s:[int(x) if x.isdigit() else 0 for x in s.split(".")]
+print(max(v,key=k) if v else "")' "$@"; }
 TARGETS=(
   "aarch64-apple-darwin pour-macos-arm64"
   "x86_64-apple-darwin pour-macos-x86_64"
@@ -81,9 +88,23 @@ command -v node >/dev/null || warn "node is missing — site and apps steps will
 # ---------------------------------------------------------------- version
 CUR=$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' Cargo.toml | head -1)
 if only build || only release; then
-  if [ -n "$VERSION" ]; then NEW="$VERSION"
+  # The newest version already out there: the mirror's release feed and GitHub's latest release.
+  # A folder from a zip may still say 0.1.0 while 0.1.3 is live — never publish a version twice.
+  PUB=""
+  if [ "$PUBLISH" = 1 ]; then
+    feedv=$(curl -fsSL -A "pour-update/1" "$MIRROR_FEED" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)
+    ghv=$(curl -fsSL -A "pour-update/1" ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("tag_name","").lstrip("v"))' 2>/dev/null || true)
+    PUB=$(vmax "$feedv" "$ghv")
+    [ -n "$PUB" ] && say "published: $PUB (feed ${feedv:-–}, GitHub ${ghv:-–}); this folder: $CUR"
+  fi
+  if [ -n "$VERSION" ]; then
+    NEW="$VERSION"
+    if [ -n "$PUB" ] && [ "$(vmax "$NEW" "$PUB")" = "$PUB" ]; then
+      die "version $NEW is not newer than the published $PUB — pass a higher --version, or leave it out to bump automatically"
+    fi
   elif [ "$PUBLISH" = 1 ] && [ -z "$ONLY" ]; then
-    IFS=. read -r a b c <<< "$CUR"; NEW="$a.$b.$((c+1))"
+    BASE=$(vmax "$CUR" "$PUB")
+    IFS=. read -r a b c <<< "$BASE"; NEW="$a.$b.$((c+1))"
   else NEW="$CUR"; fi
   if [ "$NEW" != "$CUR" ]; then
     say "version $CUR → $NEW"
@@ -123,7 +144,7 @@ if only build || only release; then
     cp "$bin" "dist/$name"
     echo "$(du -h "dist/$name" | cut -f1)"
   done
-  cp install.sh dist/install.sh
+  cp install.sh dist/install.sh; cp uninstall.sh dist/uninstall.sh
   (cd dist && for f in pour-*; do
      if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi
    done > SHA256SUMS)
@@ -180,8 +201,8 @@ if only release && [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCO
     ct=application/octet-stream
     case "$f" in *.json) ct=application/json;; *.sh) ct=text/plain;; esac
     # pinned copy first (pinned installs point at it), then the "newest" copy
-    case "$f" in *.json|*.sh) ;; *) retry 4 npx --yes wrangler@4 r2 object put "pour-registry/releases/v$VERSION/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null ;; esac
-    retry 4 npx --yes wrangler@4 r2 object put "pour-registry/releases/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null
+    case "$f" in *.json|*.sh) ;; *) retry 4 npx --yes wrangler@4 r2 object put "$R2_BUCKET/releases/v$VERSION/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null ;; esac
+    retry 4 npx --yes wrangler@4 r2 object put "$R2_BUCKET/releases/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null
   done
 fi
 
@@ -191,7 +212,7 @@ if only registry && [ -x ../pour-registry/update.sh ]; then
 fi
 if only apps && [ -f ../pour-apps/build.mjs ] && command -v node >/dev/null; then
   say "apps"; (cd ../pour-apps && node build.mjs && git add index.json && (git diff --cached --quiet || git commit -qm "refresh apps") && retry 3 git push -q) || warn "apps step failed"
-  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then retry 4 npx --yes wrangler@4 r2 object put pour-registry/apps/index.json --file ../pour-apps/index.json --content-type application/json --remote >/dev/null || true; fi
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then retry 4 npx --yes wrangler@4 r2 object put "$R2_BUCKET/apps/index.json" --file ../pour-apps/index.json --content-type application/json --remote >/dev/null || true; fi
 fi
 SITE_DIR=""; for d in ../pour-site-13-Oct-2026 ../pour-site; do [ -f "$d/package.json" ] && { SITE_DIR="$d"; break; }; done
 if only site && [ -n "$SITE_DIR" ] && command -v node >/dev/null; then
