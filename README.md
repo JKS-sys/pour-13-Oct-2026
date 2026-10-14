@@ -23,6 +23,8 @@ macOS · Linux · WSL · ChromeOS · Windows · FreeBSD · Haiku · iOS</p>
 curl -fsSL https://ipconfig.co.network/pour/install | sh
 ```
 
+> ⭐ **If Pour saves you time, star this repository** — stars are how other people find it.
+
 <!-- stats:start -->
 | | |
 |---|---|
@@ -79,7 +81,7 @@ Pour installs the creator's own apps on macOS, Windows, Linux and FreeBSD throug
 
 ## Why Pour
 
-Homebrew is a wonderful build farm with a slow front door: every command boots a Ruby interpreter, evaluates formulae, shells out to `install_name_tool` for each binary and re-signs them one by one. Pour keeps the farm and replaces the door.
+Homebrew's front door is slow: every command boots a Ruby interpreter, evaluates formulae, shells out to `install_name_tool` for each binary and re-signs them one by one. Pour keeps the farm and replaces the door.
 
 | | Homebrew | Pour |
 |---|---|---|

@@ -100,18 +100,16 @@ if ! gh release view "v$VERSION" -R "$OWNER/pour$SUFFIX" >/dev/null 2>&1; then
     cp pour/dist/* "$tmp/"; ok "using pour/dist/"
   else
     say "fetching the release files from the mirror"
-    curl -fsSL "$MIRROR/releases/latest.json" -o "$tmp/latest.json" || die "mirror has no latest.json"
-    python3 - "$tmp" <<'PY' || die "a download did not match its SHA-256"
-import json, sys, hashlib, urllib.request, os
-d = sys.argv[1]; feed = json.load(open(f"{d}/latest.json"))
-for name, a in feed["assets"].items():
-    url = a.get("mirror") or a["url"]
-    urllib.request.urlretrieve(url, f"{d}/{name}")
-    got = hashlib.sha256(open(f"{d}/{name}", "rb").read()).hexdigest()
-    if got != a["sha256"]: print(name, "checksum mismatch"); sys.exit(1)
-    print("  ✓", name, f"{os.path.getsize(f'{d}/{name}')/1e6:.1f} MB")
-urllib.request.urlretrieve("https://ipconfig.co.network/pour/dl/SHA256SUMS", f"{d}/SHA256SUMS")
-PY
+    UA="pour-publish/$VERSION"
+    curl -fsSL -A "$UA" "$MIRROR/releases/latest.json" -o "$tmp/latest.json" || die "mirror has no latest.json"
+    curl -fsSL -A "$UA" "$MIRROR/dl/v$VERSION/SHA256SUMS" -o "$tmp/SHA256SUMS" || curl -fsSL -A "$UA" "$MIRROR/dl/SHA256SUMS" -o "$tmp/SHA256SUMS" || die "mirror has no SHA256SUMS"
+    while read -r sum name; do
+      [ -n "$name" ] || continue
+      curl -fsSL -A "$UA" "$MIRROR/dl/v$VERSION/$name" -o "$tmp/$name" || curl -fsSL -A "$UA" "$MIRROR/dl/$name" -o "$tmp/$name" || die "could not download $name"
+      got=$(shasum -a 256 "$tmp/$name" 2>/dev/null | cut -d' ' -f1); [ -n "$got" ] || got=$(sha256sum "$tmp/$name" | cut -d' ' -f1)
+      [ "$got" = "$sum" ] || die "$name did not match its SHA-256"
+      ok "$name $(du -k "$tmp/$name" | cut -f1) KB, checksum OK"
+    done < "$tmp/SHA256SUMS"
     cp pour/install.sh "$tmp/install.sh"
   fi
   notes=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("notes","Pour "+sys.argv[2]))' "$tmp/latest.json" "$VERSION")
