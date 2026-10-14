@@ -190,6 +190,26 @@ pub enum Command {
     },
     /// Installed formulae nothing else depends on
     Leaves,
+    /// Every app made at ipconfig.co.network, including apps the dashboard has just added
+    Apps,
+    /// Introduce a new app to the dashboard (it stays pending until the owner switches it on;
+    /// then it is `pour install --cask <app>` everywhere)
+    Register {
+        /// The app's id: 2–24 lowercase letters, digits or dashes
+        app: String,
+        /// Display name (defaults to the id, capitalised)
+        #[arg(long)]
+        name: Option<String>,
+        /// One line about the app
+        #[arg(long)]
+        line: Option<String>,
+        /// Its current version
+        #[arg(long)]
+        version: Option<String>,
+        /// Where its release feed lives (defaults to https://ipconfig.co.network/updates/<app>/latest.json)
+        #[arg(long)]
+        feed: Option<String>,
+    },
     /// Check the installation for problems
     Doctor,
     /// Remove unused store entries and downloads

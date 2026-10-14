@@ -802,6 +802,53 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 }
             }
         }
+        Command::Apps => {
+            // Live: pour-apps plus whatever the dashboard switched on since the last `pour update`.
+            let url = std::env::var("POUR_APPS_URL").unwrap_or_else(|_| "https://ipconfig.co.network/pour/apps/index.json".into());
+            let v = pour_core::net::get_json(&pour_core::net::agent(), &url, &[])?;
+            let casks = v.get("casks").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+            if cli.json {
+                let out: Vec<serde_json::Value> = casks.iter().map(|c| serde_json::json!({"token": c["token"], "name": c["name"].get(0), "version": c["version"], "desc": c["desc"], "source": c.pointer("/pour/source").cloned().unwrap_or_else(|| "pour-apps".into())})).collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            let installed: std::collections::HashSet<String> = receipt::installed_casks(&ctx.paths).into_iter().map(|i| i.receipt.name).collect();
+            ui.println(format!("{} {} {}", arrow(), style("Apps by Jagadeesh Kumar S").bold(), style(format!("({})", casks.len())).dim()));
+            for c in &casks {
+                let token = c["token"].as_str().unwrap_or("");
+                let name = c["name"].get(0).and_then(|x| x.as_str()).unwrap_or(token);
+                let ver = c["version"].as_str().unwrap_or("");
+                let new = c.pointer("/pour/source").and_then(|x| x.as_str()) == Some("dashboard");
+                let mark = if installed.contains(token) { style(" ✔").green().to_string() } else { String::new() };
+                ui.println(format!(
+                    "  {}{} {}{}  {}",
+                    style(format!("{token:<10}")).cyan().bold(),
+                    mark,
+                    style(ver).magenta(),
+                    if new { style(" new").yellow().to_string() } else { String::new() },
+                    style(c["desc"].as_str().unwrap_or(name)).dim()
+                ));
+            }
+            ui.println(format!("{} pour install --cask <app>", style("Install:").bold()));
+        }
+        Command::Register { app, name, line, version, feed } => {
+            let ok = app.len() >= 2 && app.len() <= 24 && app.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && app.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok {
+                return Err(err("the app id must be 2–24 lowercase letters, digits or dashes, starting with a letter"));
+            }
+            let url = std::env::var("POUR_REGISTER_URL").unwrap_or_else(|_| "https://ipconfig.co.network/pour/api/apps/register".into());
+            let body = serde_json::json!({"app": app, "name": name, "line": line, "version": version, "download_url": feed, "platform": ctx.platform.describe()});
+            let (code, text) = pour_core::net::post_json(&pour_core::net::agent(), &url, &body).map_err(|e| err(format!("could not reach the dashboard: {e}")))?;
+            let j: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            if code >= 400 {
+                return Err(err(j["message"].as_str().or(j["error"].as_str()).unwrap_or("the dashboard refused it").to_string()));
+            }
+            let status = j["status"].as_str().unwrap_or("pending");
+            ui.println(format!("{} {} {} on the dashboard ({status})", style("✓").green(), style(app).cyan().bold(), if j["added"].as_bool().unwrap_or(false) { "registered" } else { "is already" }));
+            if status != "on" {
+                ui.println("  The owner switches it on in the Apps tab; then `pour update && pour install --cask ".to_string() + app + "` works everywhere.");
+            }
+        }
         Command::Doctor => doctor(&ctx)?,
         Command::Cleanup { dry_run } => {
             if *dry_run {

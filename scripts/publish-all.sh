@@ -41,7 +41,7 @@ SUFFIX=-13-Oct-2026                      # every repository is <dir>$SUFFIX
 REPOS=(pour pour-registry pour-apps pour-site pour-action pour-bench)
 MIRROR=https://ipconfig.co.network/pour
 for t in git curl python3; do command -v $t >/dev/null || die "need $t"; done
-command -v gh >/dev/null || die "need the GitHub CLI: brew install gh"
+command -v gh >/dev/null || die "need the GitHub CLI: pour install gh"
 GIT_NAME=$(git config --global user.name || true); GIT_MAIL=$(git config --global user.email || true)
 [ -n "$GIT_NAME" ] && [ -n "$GIT_MAIL" ] || die "set your git identity first: git config --global user.name 'Your Name'; git config --global user.email you@example.com"
 case "$GIT_NAME$GIT_MAIL" in *[Cc]laude*|*[Aa]nthropic*) die "git identity must be yours, not an assistant's";; esac

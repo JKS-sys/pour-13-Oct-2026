@@ -135,7 +135,7 @@ pour uninstall --zap firefox        # remove an app with its preferences and cac
 pour bundle                         # install from the Brewfile in this directory
 pour migrate                        # install everything Homebrew has on this machine
 pour list · outdated · leaves · deps ffmpeg --tree · uses openssl@3
-pour link · unlink · pin · unpin · tap add · doctor · cleanup · env · self-update
+pour apps · register · link · unlink · pin · unpin · tap add · doctor · cleanup · env · self-update
 ```
 
 Shell completions: `pour completions zsh > ~/.zfunc/_pour` (bash, fish, elvish and PowerShell too).
@@ -189,6 +189,16 @@ bash update.sh                  # the one script: tests, every platform (zig cro
 ## Pour and Homebrew
 
 Pour is a client for the Homebrew ecosystem. It installs the bottles Homebrew's build farm compiles, tests and publishes, and reads Homebrew's public JSON API to know about them. It does not build from source and it never writes to `/opt/homebrew`; both can live on one machine, and `pour migrate` copies Homebrew's packages over. Pour is not affiliated with Homebrew.
+
+## The apps, and new ones
+
+```sh
+pour apps                         # every app made at ipconfig.co.network — new ones the dashboard adds, too
+pour install --cask hone          # any of them, from its live release feed
+pour register tilt --name Tilt --version 0.1.0   # introduce a new app to the dashboard
+```
+
+A registered app waits on the dashboard until the owner switches it on; from then on it is in `/pour/apps/index.json`, so `pour update && pour install --cask <app>` works on every computer.
 
 <!-- licence -->
 ## Licence

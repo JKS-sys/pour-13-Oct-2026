@@ -53,7 +53,7 @@ retry() { # retry <tries> <cmd...> — for Cloudflare's occasional 5xx
 }
 
 OWNER=JKS-sys
-REPO=$OWNER/pour
+REPO=$OWNER/pour-13-Oct-2026   # repositories carry their date suffix
 TARGETS=(
   "aarch64-apple-darwin pour-macos-arm64"
   "x86_64-apple-darwin pour-macos-x86_64"
@@ -149,12 +149,12 @@ fi
 # ---------------------------------------------------------------- release
 if only release && command -v gh >/dev/null && [ -n "$GH_TOKEN" ]; then
   say "release v$VERSION on GitHub"
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    git add -A && git commit -qm "release $VERSION" || true
-  fi
+  # A fresh zip has no .git: push-github.sh fetches GitHub's newest commit, commits this folder on
+  # top of it and pushes a fast-forward (never a rewrite). Then the tag.
+  COMMIT_MSG="release $VERSION" retry 3 bash scripts/push-github.sh "${REPO#*/}" || warn "source push failed"
   git tag -f "v$VERSION" >/dev/null
-  retry 3 git push -q origin HEAD
-  retry 3 git push -q -f origin "v$VERSION"
+  AUTH="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+  retry 3 git -c "http.extraHeader=$AUTH" push -q -f origin "v$VERSION"
   if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "v$VERSION" dist/* -R "$REPO" --clobber
   else
@@ -182,8 +182,10 @@ if only apps && [ -f ../pour-apps/build.mjs ] && command -v node >/dev/null; the
   say "apps"; (cd ../pour-apps && node build.mjs && git add index.json && (git diff --cached --quiet || git commit -qm "refresh apps") && retry 3 git push -q) || warn "apps step failed"
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then retry 4 npx --yes wrangler@4 r2 object put pour-registry/apps/index.json --file ../pour-apps/index.json --content-type application/json --remote >/dev/null || true; fi
 fi
-if only site && [ -f ../pour-site/package.json ] && command -v node >/dev/null; then
-  say "site"; (cd ../pour-site && npm ci --silent 2>/dev/null || npm install --silent; retry 4 npm run deploy) || warn "site deploy failed"
+SITE_DIR=""; for d in ../pour-site-13-Oct-2026 ../pour-site; do [ -f "$d/package.json" ] && { SITE_DIR="$d"; break; }; done
+if only site && [ -n "$SITE_DIR" ] && command -v node >/dev/null; then
+  # its own deploy.sh deploys the Worker and pushes that folder to its repository
+  say "site"; (cd "$SITE_DIR" && if [ -x deploy.sh ]; then bash deploy.sh; else npm ci --silent 2>/dev/null || npm install --silent; retry 4 npm run deploy; fi) || warn "site deploy failed"
 fi
 if only details; then
   say "README numbers"; python3 scripts/readme-stats.py || warn "could not refresh the README stats"
