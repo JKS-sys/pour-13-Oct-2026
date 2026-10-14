@@ -1106,7 +1106,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             match sh.as_str() {
                 "fish" => println!("set -gx POUR_PREFIX \"{p}\"; fish_add_path -gP \"{p}/bin\" \"{p}/sbin\";"),
                 "pwsh" | "powershell" => println!("$env:POUR_PREFIX = \"{p}\"; $env:PATH = \"{p}\\bin;\" + $env:PATH"),
-                _ => println!("export POUR_PREFIX=\"{p}\"; export PATH=\"{p}/bin:{p}/sbin${{PATH+:$PATH}}\"; export MANPATH=\"{p}/share/man${{MANPATH+:$MANPATH}}:\"; export INFOPATH=\"{p}/share/info:${{INFOPATH:-}}\";"),
+                // idempotent: a shell that reads several start-up files adds the folders once
+                _ => println!("export POUR_PREFIX=\"{p}\"; case \":${{PATH}}:\" in *\":{p}/bin:\"*) ;; *) export PATH=\"{p}/bin:{p}/sbin${{PATH+:$PATH}}\" ;; esac; case \":${{MANPATH:-}}:\" in *\":{p}/share/man:\"*) ;; *) export MANPATH=\"{p}/share/man${{MANPATH+:$MANPATH}}:\" ;; esac; export INFOPATH=\"{p}/share/info:${{INFOPATH:-}}\";"),
             }
         }
         Command::Env => {
@@ -1874,13 +1875,16 @@ fn init(ctx: &Ctx, dry_run: bool) -> Result<()> {
     }
     ui.ok(format!("{p} is ready"));
     ctx.update(false)?;
+    // ~/.zshenv is read by every zsh — login, non-login (Keel, VS Code) and `zsh -c`
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let rc = match shell.rsplit('/').next().unwrap_or("zsh") {
+        "bash" => ".bashrc",
+        "fish" => ".config/fish/config.fish",
+        "zsh" | "" => ".zshenv",
+        _ => ".profile",
+    };
     ui.println(format!(
-        "\nAdd Pour to your shell (once):\n  echo 'eval \"$(pour shellenv)\"' >> ~/.{}rc\n",
-        std::env::var("SHELL")
-            .unwrap_or_default()
-            .rsplit('/')
-            .next()
-            .unwrap_or("zsh")
+        "\nAdd Pour to your shell (once), so every terminal finds it:\n  echo 'eval \"$({p}/bin/pour shellenv)\"' >> ~/{rc}\n"
     ));
     Ok(())
 }

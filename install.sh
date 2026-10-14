@@ -111,20 +111,47 @@ say "installed $("$PREFIX/bin/pour" --version)"
 POUR_PREFIX="$PREFIX" "$PREFIX/bin/pour" update || say "could not fetch the index now — run \`pour update\` later"
 
 # 5. Shell
+# Terminals differ in which start-up files they read: Terminal.app opens login shells
+# (~/.zprofile), most other terminals — Keel, VS Code, iTerm with defaults changed — open
+# non-login shells (~/.zshrc), and tools that run `zsh -c '…'` read only ~/.zshenv. So the
+# PATH line goes where every kind of shell sees it. It is a plain export (no subprocess),
+# so it costs nothing at start-up, and it only adds the folder once.
+pathline="[ -d \"$PREFIX/bin\" ] && case \":\$PATH:\" in *\":$PREFIX/bin:\"*) ;; *) export PATH=\"$PREFIX/bin:$PREFIX/sbin:\$PATH\" POUR_PREFIX=\"$PREFIX\" ;; esac"
 shell_name=$(basename "${SHELL:-sh}")
 case "$shell_name" in
-  zsh)  rc="$HOME/.zprofile"; line="eval \"\$($PREFIX/bin/pour shellenv)\"" ;;
-  bash) if [ "$os" = macos ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi; line="eval \"\$($PREFIX/bin/pour shellenv)\"" ;;
-  fish) rc="$HOME/.config/fish/config.fish"; line="$PREFIX/bin/pour shellenv fish | source" ;;
-  *)    rc="$HOME/.profile"; line="eval \"\$($PREFIX/bin/pour shellenv)\"" ;;
+  zsh)  rcs="$HOME/.zshenv $HOME/.zshrc"; line="$pathline" ;;
+  bash) rcs="$HOME/.bashrc $HOME/.bash_profile"; line="$pathline" ;;
+  fish) rcs="$HOME/.config/fish/config.fish"; line="fish_add_path -gP $PREFIX/bin $PREFIX/sbin; set -gx POUR_PREFIX $PREFIX" ;;
+  *)    rcs="$HOME/.profile"; line="$pathline" ;;
 esac
 if [ -n "${POUR_NO_MODIFY_PATH:-}" ]; then
-  say "add this to $rc:  $line"
-elif grep -qs 'pour shellenv' "$rc" 2>/dev/null; then
-  say "$rc already loads Pour"
+  say "add this to your shell's start-up file:  $line"
 else
-  mkdir -p "$(dirname "$rc")"
-  printf '\n# Pour — https://ipconfig.co.network/pour\n%s\n' "$line" >> "$rc"
-  say "added Pour to $rc"
+  for rc in $rcs; do
+    if grep -qs "# Pour PATH" "$rc" 2>/dev/null; then
+      say "$rc already puts Pour on PATH"
+    else
+      mkdir -p "$(dirname "$rc")"
+      printf '\n# Pour PATH — https://ipconfig.co.network/pour\n%s\n' "$line" >> "$rc"
+      say "added Pour to $rc"
+    fi
+  done
 fi
-printf '\n\033[1mDone.\033[0m Open a new terminal (or run: %s) and try:\n\n  pour install jq\n  pour search music\n  pour install --cask peek\n\n' "$line"
+# Works in the terminal you are in right now, too: link `pour` into a folder that is already
+# on this PATH and that you can write to (never Homebrew's prefix).
+linked=""
+oldifs=$IFS; IFS=:
+for d in $PATH; do
+  case "$d" in "$PREFIX"/*|/opt/homebrew/*|"") continue ;; esac
+  case "$d" in "$HOME"/*|/usr/local/bin)
+    if [ -d "$d" ] && [ -w "$d" ]; then ln -sf "$PREFIX/bin/pour" "$d/pour" && linked="$d/pour" && break; fi ;;
+  esac
+done
+IFS=$oldifs
+[ -n "$linked" ] && say "linked $linked so \`pour\` works in this terminal now"
+if [ -n "$linked" ]; then
+  ready="pour is ready in this terminal and every new one."
+else
+  ready="New terminals have pour. In this one, run: export PATH=\"$PREFIX/bin:\$PATH\""
+fi
+printf '\n\033[1mDone.\033[0m %s Try:\n\n  pour install jq\n  pour search music\n  pour install --cask peek\n\n' "$ready"
