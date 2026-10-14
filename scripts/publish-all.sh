@@ -15,7 +15,6 @@
 #   3. publishes the rolling `latest` release of pour-registry (the index)
 #   4. sets the Cloudflare secrets the sync and release workflows need
 #   5. sets description, website and topics on every repository
-#   6. adds Formula/pour.rb to homebrew-tap when ../homebrew-tap is a clone
 #   7. starts the first registry and apps sync runs
 #
 # Needs: git, gh, curl, python3. Credentials come from pour/.env (gitignored):
@@ -143,13 +142,6 @@ else warn "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not in .env - the sync w
 # 5. Details
 say "descriptions, websites, topics"
 bash pour/scripts/repo-details.sh || true
-
-# 6. Tap
-if [ -d homebrew-tap/.git ] || [ -d ../homebrew-tap/.git ]; then
-  tap=homebrew-tap; [ -d "$tap/.git" ] || tap=../homebrew-tap
-  say "homebrew-tap formula"
-  bash pour/scripts/tap-formula.sh "$VERSION" "$tap" && (cd "$tap" && git add Formula/pour.rb && git -c user.name="Jagadeesh Kumar S" -c user.email="${GIT_EMAIL:-jagadeesh_2k17@proton.me}" commit -q -m "pour $VERSION" 2>/dev/null; git push -q 2>/dev/null && ok "homebrew-tap: Formula/pour.rb pushed" || warn "homebrew-tap: commit or push failed")
-fi
 
 # 7. First syncs
 say "first sync runs"

@@ -5,7 +5,7 @@
 #   bash update.sh --no-publish    build and package only (dist/)
 #   bash update.sh --version 0.2.0 release as this version (default: bump the patch)
 #   bash update.sh --skip-tests    (not recommended)
-#   bash update.sh --only build|release|registry|apps|site|tap|details
+#   bash update.sh --only build|release|registry|apps|site|details
 #
 # Steps, in order — each prints what it is doing:
 #   doctor  → tools present (cargo, cargo-zigbuild + zig, gh, node, wrangler)
@@ -18,7 +18,6 @@
 #   registry→ ../pour-registry/update.sh (index of every Homebrew formula + cask)
 #   apps    → ../pour-apps (versions of Jagadeesh's apps)
 #   site    → ../pour-site (wrangler deploy)
-#   tap     → ../homebrew-tap Formula/pour.rb so `brew install jks-sys/tap/pour` works
 #   details → description, website and topics on every GitHub repo
 #
 # Credentials come from a gitignored .env (GH_TOKEN, CLOUDFLARE_API_TOKEN,
@@ -169,13 +168,13 @@ if only release && [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCO
   for f in dist/*; do
     ct=application/octet-stream
     case "$f" in *.json) ct=application/json;; *.sh) ct=text/plain;; esac
-    # pinned copy first (the tap formula points at it), then the "newest" copy
+    # pinned copy first (pinned installs point at it), then the "newest" copy
     case "$f" in *.json|*.sh) ;; *) retry 4 npx --yes wrangler@4 r2 object put "pour-registry/releases/v$VERSION/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null ;; esac
     retry 4 npx --yes wrangler@4 r2 object put "pour-registry/releases/$(basename "$f")" --file "$f" --content-type "$ct" --remote >/dev/null
   done
 fi
 
-# ---------------------------------------------------------------- registry, apps, site, tap
+# ---------------------------------------------------------------- registry, apps, site
 if only registry && [ -x ../pour-registry/update.sh ]; then
   say "registry sync"; POUR_BIN="$PWD/target/release/pour" bash ../pour-registry/update.sh || warn "registry sync failed"
 fi
@@ -185,9 +184,6 @@ if only apps && [ -f ../pour-apps/build.mjs ] && command -v node >/dev/null; the
 fi
 if only site && [ -f ../pour-site/package.json ] && command -v node >/dev/null; then
   say "site"; (cd ../pour-site && npm ci --silent 2>/dev/null || npm install --silent; retry 4 npm run deploy) || warn "site deploy failed"
-fi
-if only tap && [ -d ../homebrew-tap ]; then
-  say "Homebrew tap formula"; bash scripts/tap-formula.sh "$VERSION" ../homebrew-tap && (cd ../homebrew-tap && git add -A && (git diff --cached --quiet || git commit -qm "pour $VERSION") && retry 3 git push -q) || warn "tap update failed"
 fi
 if only details; then
   say "README numbers"; python3 scripts/readme-stats.py || warn "could not refresh the README stats"

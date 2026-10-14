@@ -106,8 +106,6 @@ curl -fsSL https://ipconfig.co.network/pour/install | sh
 
 The script explains each step, checks the SHA-256 of what it downloads, asks for your password once to create `/opt/pour`, fetches the index and adds one line to your shell profile. Set `POUR_NO_MODIFY_PATH=1` to keep your profile untouched.
 
-**With Homebrew** (yes, really): `brew install jks-sys/tap/pour`, then `pour init`.
-
 **Windows 10/11:** download [`pour-windows-x86_64.exe`](https://github.com/JKS-sys/pour-13-Oct-2026/releases/latest) (or `arm64`), put it on your `PATH` as `pour.exe`, run `pour init`. Pour on Windows searches the registry, shows package info and installs the Pour-native apps; Homebrew bottles need WSL, where the one-line installer works as on Linux.
 
 **FreeBSD 14:** [`pour-freebsd-x86_64`](https://github.com/JKS-sys/pour-13-Oct-2026/releases/latest) → `/usr/local/bin/pour`, then `pour init`. Homebrew publishes no FreeBSD bottles, so Pour gives you the registry, `info`, `search` and the apps that ship a FreeBSD build.
@@ -183,7 +181,7 @@ The [Pour registry](https://github.com/JKS-sys/pour-registry-13-Oct-2026) re-ind
 cargo test                      # 46 unit tests + the CLI
 cargo build --release -p pour   # target/release/pour
 bash update.sh                  # the one script: tests, every platform (zig cross-builds), release,
-                                # R2 mirror, registry sync, apps, site deploy, Homebrew tap, repo details
+                                # R2 mirror, registry sync, apps, site deploy, repo details
 ```
 
 `update.sh --no-publish` builds `dist/` for all eight targets without touching GitHub or Cloudflare.
