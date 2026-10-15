@@ -164,7 +164,7 @@ Shell completions: `pour completions zsh > ~/.zfunc/_pour` (bash, fish, elvish a
   var/pour/index.pour             the index · taps/ extra registries
 ```
 
-Environment: `POUR_PREFIX` (13 characters or fewer on macOS), `POUR_CACHE`, `POUR_INDEX_URL`, `POUR_CA_BUNDLE`/`SSL_CERT_FILE` for TLS-inspecting proxies, `HTTPS_PROXY`.
+Environment: `POUR_PREFIX` (13 characters or fewer on macOS), `POUR_CACHE`, `POUR_INDEX_URL`, `POUR_CA_BUNDLE`/`SSL_CERT_FILE` for TLS-inspecting proxies, `HTTPS_PROXY`, `POUR_SOUND=0` (no finishing chime: Pour plays the system's own Glass sound after it pours something in an interactive terminal, never in pipes, CI, `--quiet` or `--json`).
 
 ## Registries
 

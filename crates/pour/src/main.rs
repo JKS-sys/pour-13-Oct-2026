@@ -338,9 +338,13 @@ fn main() -> ExitCode {
     let result = cmd::run(&cli, &ui);
     ui.finish();
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            ui.chime_end(true);
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             ui.error(e.to_string());
+            ui.chime_end(false);
             ExitCode::FAILURE
         }
     }

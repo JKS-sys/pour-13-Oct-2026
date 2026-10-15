@@ -841,7 +841,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     "  {}{} {}{}  {}",
                     style(format!("{token:<10}")).cyan().bold(),
                     mark,
-                    style(ver).magenta(),
+                    style(ver).blue(),
                     if new {
                         style(" new").yellow().to_string()
                     } else {

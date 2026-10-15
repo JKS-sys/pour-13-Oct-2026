@@ -5,6 +5,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pour_core::install::{Event, Reporter};
 use pour_core::net::Progress;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -16,6 +17,8 @@ pub struct Ui {
     bars: Mutex<HashMap<String, ProgressBar>>,
     total: Mutex<Option<ProgressBar>>,
     phase_started: Mutex<Option<std::time::Instant>>,
+    /// Something was poured (installed, upgraded) — the finishing chime plays once.
+    poured: AtomicBool,
 }
 
 pub fn arrow() -> console::StyledObject<&'static str> {
@@ -36,6 +39,7 @@ impl Ui {
             bars: Mutex::new(HashMap::new()),
             total: Mutex::new(None),
             phase_started: Mutex::new(None),
+            poured: AtomicBool::new(false),
         }
     }
 
@@ -76,6 +80,86 @@ impl Ui {
             t.finish_and_clear();
         }
     }
+
+    /// The pour sound when a command poured something, the low one when it failed.
+    /// Interactive terminals only (never in pipes, CI, --quiet or --json); POUR_SOUND=0 turns it off.
+    pub fn chime_end(&self, ok: bool) {
+        if ok && !self.poured.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.quiet || self.json || !Term::stderr().is_term() || !sound_on() {
+            return;
+        }
+        chime(ok);
+    }
+}
+
+fn sound_on() -> bool {
+    if std::env::var_os("CI").is_some() {
+        return false;
+    }
+    !matches!(
+        std::env::var("POUR_SOUND")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "off" | "false" | "no"
+    )
+}
+
+/// Play the system's own sound without waiting for it (the player outlives pour).
+fn chime(ok: bool) {
+    use std::process::{Command, Stdio};
+    let spawn = |prog: &str, args: &[&str]| {
+        Command::new(prog)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    };
+    if cfg!(target_os = "macos") {
+        let f = if ok {
+            "/System/Library/Sounds/Glass.aiff"
+        } else {
+            "/System/Library/Sounds/Basso.aiff"
+        };
+        if std::path::Path::new(f).exists() && spawn("afplay", &["-v", "0.6", f]) {
+            return;
+        }
+    } else if cfg!(target_os = "windows") {
+        let f = if ok {
+            r"C:\Windows\Media\Windows Notify System Generic.wav"
+        } else {
+            r"C:\Windows\Media\Windows Critical Stop.wav"
+        };
+        if std::path::Path::new(f).exists() {
+            let ps = format!("(New-Object Media.SoundPlayer '{f}').PlaySync()");
+            if spawn(
+                "powershell",
+                &["-NoProfile", "-NonInteractive", "-Command", &ps],
+            ) {
+                return;
+            }
+        }
+    } else {
+        let f = if ok {
+            "/usr/share/sounds/freedesktop/stereo/complete.oga"
+        } else {
+            "/usr/share/sounds/freedesktop/stereo/dialog-error.oga"
+        };
+        if std::path::Path::new(f).exists() && (spawn("paplay", &[f]) || spawn("pw-play", &[f])) {
+            return;
+        }
+        if spawn(
+            "canberra-gtk-play",
+            &["-i", if ok { "complete" } else { "dialog-error" }],
+        ) {
+            return;
+        }
+    }
+    eprint!("\x07");
 }
 
 impl Progress for Ui {
@@ -87,17 +171,23 @@ impl Progress for Ui {
             Some(t) => {
                 let b = self.multi.add(ProgressBar::new(t));
                 b.set_style(
-                    ProgressStyle::with_template("  {prefix:<24.cyan} {bar:28.blue/dim} {bytes:>9} / {total_bytes:<9} {bytes_per_sec:>11}")
+                    ProgressStyle::with_template("  {prefix:<24.cyan} {bar:28.yellow/dim} {bytes:>9.green} / {total_bytes:<9} {bytes_per_sec:>11.blue}")
                         .unwrap()
-                        .progress_chars("━╸─"),
+                        .progress_chars("█▓░"),
                 );
                 b
             }
             None => {
                 let b = self.multi.add(ProgressBar::new_spinner());
                 b.set_style(
-                    ProgressStyle::with_template("  {prefix:<24.cyan} {spinner} {bytes:>9}")
-                        .unwrap(),
+                    ProgressStyle::with_template(
+                        "  {prefix:<24.cyan} {spinner:.yellow} {bytes:>9.green}",
+                    )
+                    .unwrap()
+                    // a glass filling up, then poured out again
+                    .tick_strings(&[
+                        "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂", "▁",
+                    ]),
                 );
                 b.enable_steady_tick(Duration::from_millis(80));
                 b
@@ -150,6 +240,14 @@ impl Reporter for Ui {
                 action,
                 ms,
             } => {
+                if matches!(
+                    action,
+                    pour_core::resolve::Action::Install
+                        | pour_core::resolve::Action::Reinstall
+                        | pour_core::resolve::Action::Upgrade
+                ) {
+                    self.poured.store(true, Ordering::Relaxed);
+                }
                 let verb = match action {
                     pour_core::resolve::Action::Install => "poured",
                     pour_core::resolve::Action::Reinstall => "reinstalled",
@@ -158,7 +256,7 @@ impl Reporter for Ui {
                 };
                 self.println(format!(
                     "  {} {} {} {} {}",
-                    style("🍶").dim(),
+                    style("🍶").yellow(),
                     style(&name).bold(),
                     style(&version).dim(),
                     style(verb).green(),
