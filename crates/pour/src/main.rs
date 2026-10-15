@@ -2,6 +2,7 @@
 //! milliseconds. Copyright (c) 2026 Jagadeesh Kumar S. All rights reserved.
 
 mod cmd;
+mod paint;
 mod ui;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -192,23 +193,42 @@ pub enum Command {
     Leaves,
     /// Every app made at ipconfig.co.network, including apps the dashboard has just added
     Apps,
-    /// Introduce a new app to the dashboard (it stays pending until the owner switches it on;
-    /// then it is `pour install --cask <app>` everywhere)
+    /// Register an app (`pour install --cask NAME`) or a command-line tool (`pour install NAME`):
+    /// checked automatically, listed for everyone at once when it qualifies — no waiting for approval
     Register {
-        /// The app's id: 2–24 lowercase letters, digits or dashes
+        /// The id people install it by: 2–40 lowercase letters, digits, dashes, dots, plus or @
         app: String,
+        /// A command-line tool (installed with `pour install NAME`) instead of an app (`--cask`)
+        #[arg(long)]
+        cli: bool,
         /// Display name (defaults to the id, capitalised)
         #[arg(long)]
         name: Option<String>,
-        /// One line about the app
+        /// One line about it (10–200 characters)
+        #[arg(long, alias = "line")]
+        desc: Option<String>,
+        /// Its web page (https)
         #[arg(long)]
-        line: Option<String>,
+        homepage: Option<String>,
         /// Its current version
         #[arg(long)]
         version: Option<String>,
-        /// Where its release feed lives (defaults to https://ipconfig.co.network/updates/<app>/latest.json)
+        /// Release feed (latest.json with version + downloads per system); Pour follows it for every update
         #[arg(long)]
         feed: Option<String>,
+        /// A download for one system: PLATFORM=URL#SHA256 (macos-arm64, macos-x86_64, linux-x86_64,
+        /// linux-arm64, windows-x86_64, windows-arm64, freebsd-x86_64); repeat for each system
+        #[arg(long = "url", value_name = "PLATFORM=URL#SHA256")]
+        urls: Vec<String>,
+        /// Program names a command-line tool puts on PATH (defaults to the id)
+        #[arg(long = "bin")]
+        bins: Vec<String>,
+        /// The app bundle inside the download (defaults to "<Name>.app")
+        #[arg(long = "app-bundle")]
+        app_bundle: Option<String>,
+        /// The key printed at the first registration (or POUR_REGISTER_KEY / APPS_API_KEY) — needed to update it
+        #[arg(long)]
+        key: Option<String>,
     },
     /// Check the installation for problems
     Doctor,
@@ -333,6 +353,7 @@ fn main() -> ExitCode {
     unsafe {
         libc_sigpipe_default();
     }
+    paint::init();
     let cli = Cli::parse();
     let ui = ui::Ui::new(cli.quiet, cli.verbose, cli.json);
     let result = cmd::run(&cli, &ui);

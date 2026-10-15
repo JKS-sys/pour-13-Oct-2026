@@ -338,6 +338,9 @@ fn container_for(url: &str, hint: Option<&str>, kind: Option<&str>) -> Container
         Some("zip") => Some(Container::Zip),
         Some("tar.gz") | Some("tar") | Some("tgz") => Some(Container::Tar),
         Some("pkg") => Some(Container::Pkg),
+        Some("tar.xz") | Some("tar.bz2") | Some("tar.zst") | Some("txz") => Some(Container::Tar),
+        // a bare program (a CLI's `tool` or `tool.exe`): never run it as an installer
+        Some("binary") | Some("naked") | Some("bin") => Some(Container::Naked),
         _ => None,
     };
     if let Some(c) = by_kind.or(by_hint) {
@@ -371,6 +374,48 @@ fn container_for(url: &str, hint: Option<&str>, kind: Option<&str>) -> Container
     } else {
         Container::Naked
     }
+}
+
+/// The programs a Pour-native cask puts on PATH: the basenames of its `binary`
+/// artifacts, else its token. Lowercase, without `.exe`.
+pub fn program_names(cask: &Cask) -> Vec<String> {
+    let arts: Vec<Value> = serde_json::from_str(&cask.artifacts).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for a in &arts {
+        let list = match a.get("binary") {
+            Some(Value::Array(v)) => v.clone(),
+            Some(Value::String(x)) => vec![Value::String(x.clone())],
+            _ => continue,
+        };
+        // Homebrew-style `binary` entries may carry a `target`: that is the name on PATH.
+        if let Some(t) = a.get("target").and_then(|t| t.as_str()) {
+            let base = t
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(t)
+                .to_ascii_lowercase();
+            let base = base.strip_suffix(".exe").unwrap_or(&base).to_string();
+            if !base.is_empty() && !out.contains(&base) {
+                out.push(base);
+            }
+            continue;
+        }
+        for x in list.iter().filter_map(|x| x.as_str()) {
+            let base = x
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(x)
+                .to_ascii_lowercase();
+            let base = base.strip_suffix(".exe").unwrap_or(&base).to_string();
+            if !base.is_empty() && !out.contains(&base) {
+                out.push(base);
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(cask.token.to_ascii_lowercase());
+    }
+    out
 }
 
 fn basename_from_url(url: &str) -> String {
@@ -459,10 +504,13 @@ impl CaskEngine<'_> {
         let (mut url, mut sha, mut version, art_override) =
             cask.download_for(&self.platform.cask_variations());
         let mut native: Option<NativeInstaller> = None;
-        if self.platform.os != Os::MacOs {
+        // Pour-native registries (command-line tools from pour-tools) may carry the
+        // macOS build as a native entry too: used when the cask has no Homebrew-style url.
+        let mac_native = self.platform.os == Os::MacOs && cask.url.is_empty();
+        if self.platform.os != Os::MacOs || mac_native {
             let key = native_key(self.platform);
             native = cask.native.iter().find(|n| n.platform == key).cloned();
-            if native.is_none() && cask.livecheck_url.is_none() {
+            if native.is_none() && cask.livecheck_url.is_none() && !mac_native {
                 return Err(CaskError::NoInstaller {
                     token: cask.token.clone(),
                     platform: self.platform.describe(),
@@ -1228,11 +1276,13 @@ impl CaskEngine<'_> {
             }
             Container::Tar | Container::Zip => {
                 // Extracted into the stage already: keep it in the Caskroom and
-                // link executables named like the token into bin.
+                // link the programs the registry names (or the one named like the token) into bin.
                 let dest = room.join("files");
                 let _ = store::remove_tree(&dest);
                 move_or_copy(stage, &dest)?;
                 summary.artifacts.push(dest.display().to_string());
+                let wanted = program_names(cask);
+                let mut found: Vec<String> = Vec::new();
                 let mut stack = vec![dest.clone()];
                 while let Some(d) = stack.pop() {
                     let Ok(rd) = std::fs::read_dir(&d) else {
@@ -1249,24 +1299,39 @@ impl CaskEngine<'_> {
                             .unwrap_or_default()
                             .to_string_lossy()
                             .to_ascii_lowercase();
-                        if fname == cask.token.to_ascii_lowercase()
-                            || fname == format!("{}.exe", cask.token.to_ascii_lowercase())
-                        {
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(
-                                    &p,
-                                    std::fs::Permissions::from_mode(0o755),
-                                );
-                                let link = self.paths.bin().join(&cask.token);
-                                let _ = std::fs::remove_file(&link);
-                                std::os::unix::fs::symlink(&p, &link)?;
-                                summary.artifacts.push(link.display().to_string());
-                            }
+                        let stem = fname.strip_suffix(".exe").unwrap_or(&fname).to_string();
+                        if wanted.contains(&stem) && !found.contains(&stem) {
+                            let link = self.link_program(&p, &stem)?;
+                            summary.artifacts.push(link);
+                            found.push(stem);
                         }
                     }
                 }
+                if found.is_empty() {
+                    summary.warnings.push(format!(
+                        "{}: no program named {} in the download; files are in {}",
+                        cask.token,
+                        wanted.join(" / "),
+                        dest.display()
+                    ));
+                }
+            }
+            Container::Naked => {
+                // One bare program: it becomes bin/<name>.
+                let name = program_names(cask)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| cask.token.to_ascii_lowercase());
+                let exe = if self.platform.os == Os::Windows {
+                    format!("{name}.exe")
+                } else {
+                    name.clone()
+                };
+                let dest = room.join(&exe);
+                std::fs::copy(file, &dest)?;
+                summary.artifacts.push(dest.display().to_string());
+                let link = self.link_program(&dest, &name)?;
+                summary.artifacts.push(link);
             }
             other => {
                 return Err(fail(format!(
@@ -1277,6 +1342,33 @@ impl CaskEngine<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Put one program from a Pour-native download on PATH: a symlink in bin
+    /// (a copy on Windows, where links need special rights). Returns what to remove later.
+    fn link_program(&self, program: &Path, name: &str) -> Result<String> {
+        let bin = self.paths.bin();
+        std::fs::create_dir_all(&bin)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755));
+            let link = bin.join(name);
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(program, &link)?;
+            Ok(link.display().to_string())
+        }
+        #[cfg(not(unix))]
+        {
+            // A one-line .cmd shim keeps the program beside its own files (cmake's
+            // share/, git's mingw64/) and needs no special rights, unlike a symlink.
+            let shim = bin.join(format!("{name}.cmd"));
+            std::fs::write(
+                &shim,
+                format!("@echo off\r\n\"{}\" %*\r\n", program.display()),
+            )?;
+            Ok(shim.display().to_string())
+        }
     }
 
     /// Remove what a cask placed. `zap` also runs the cask's `zap` stanza.

@@ -24,6 +24,7 @@ pub use paths::Paths;
 pub use platform::{Arch, Os, Platform};
 pub use registry::Registry;
 pub mod cask;
+pub mod homebrew;
 pub mod install;
 pub mod linuxsetup;
 pub mod lock;

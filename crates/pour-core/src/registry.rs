@@ -18,14 +18,28 @@ pub const CORE_INDEX_URLS: &[&str] = &[
     "https://github.com/JKS-sys/pour-registry-13-Oct-2026/releases/latest/download/index.pour.gz",
 ];
 
-pub const DEFAULT_TAPS: &[(&str, &str)] = &[(
-    "jks-sys/pour-apps",
-    "https://ipconfig.co.network/pour/apps/index.json",
-)];
-pub const TAP_FALLBACKS: &[(&str, &str)] = &[(
-    "jks-sys/pour-apps",
-    "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/index.json",
-)];
+pub const DEFAULT_TAPS: &[(&str, &str)] = &[
+    (
+        "jks-sys/pour-apps",
+        "https://ipconfig.co.network/pour/apps/index.json",
+    ),
+    // Command-line tools with their own builds for every system (Windows, FreeBSD,
+    // Linux, macOS), plus tools registered automatically through /pour/api/register.
+    (
+        "jks-sys/pour-tools",
+        "https://ipconfig.co.network/pour/tools/index.json",
+    ),
+];
+pub const TAP_FALLBACKS: &[(&str, &str)] = &[
+    (
+        "jks-sys/pour-apps",
+        "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/index.json",
+    ),
+    (
+        "jks-sys/pour-tools",
+        "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/tools.index.json",
+    ),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -123,21 +137,44 @@ pub fn details_file(paths: &Paths) -> PathBuf {
     paths.state().join("details.pour")
 }
 
-/// Tap list on disk (`taps.json`); the defaults when the file is missing.
+/// Tap list on disk (`taps.json`) plus every default tap it does not mention, so a
+/// default added in a newer Pour reaches existing installs. A default that was
+/// removed is kept in the file with an empty url and stays off.
 pub fn taps(paths: &Paths) -> Vec<Tap> {
     let file = paths.state().join("taps.json");
-    if let Ok(text) = std::fs::read_to_string(&file) {
-        if let Ok(t) = serde_json::from_str::<Vec<Tap>>(&text) {
-            return t;
+    let mut list: Vec<Tap> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<Tap>>(&t).ok())
+        .unwrap_or_default();
+    for (n, u) in DEFAULT_TAPS {
+        if !list.iter().any(|t| t.name == *n) {
+            list.push(Tap {
+                name: n.to_string(),
+                url: u.to_string(),
+            });
         }
     }
-    DEFAULT_TAPS
-        .iter()
-        .map(|(n, u)| Tap {
-            name: n.to_string(),
-            url: u.to_string(),
-        })
-        .collect()
+    list.retain(|t| !t.url.is_empty());
+    list
+}
+
+/// Remove a tap; a default tap is remembered as switched off (empty url).
+pub fn remove_tap(paths: &Paths, name: &str) -> std::io::Result<bool> {
+    let file = paths.state().join("taps.json");
+    let mut list: Vec<Tap> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<Tap>>(&t).ok())
+        .unwrap_or_default();
+    let present = taps(paths).iter().any(|t| t.name == name);
+    list.retain(|t| t.name != name);
+    if DEFAULT_TAPS.iter().any(|(n, _)| *n == name) {
+        list.push(Tap {
+            name: name.to_string(),
+            url: String::new(),
+        });
+    }
+    save_taps(paths, &list)?;
+    Ok(present)
 }
 
 pub fn save_taps(paths: &Paths, list: &[Tap]) -> std::io::Result<()> {
@@ -268,6 +305,29 @@ impl Registry {
                     }
                 }
                 return Some((s.name.clone(), p));
+            }
+        }
+        None
+    }
+
+    /// A Pour-native build of `name` for this machine from a tap (pour-tools,
+    /// pour-apps), used when the core formula has no bottle here — `pour install gh`
+    /// on Windows or FreeBSD, where Homebrew publishes nothing.
+    pub fn native_alternative(
+        &self,
+        name: &str,
+        platform: &crate::platform::Platform,
+    ) -> Option<(String, crate::model::Cask)> {
+        let key = crate::cask::native_key(platform);
+        let mac = platform.os == crate::platform::Os::MacOs;
+        for s in self.sources.iter().skip(1) {
+            if let Some(Pkg::Cask(c)) = s.index.find(Kind::Cask, name) {
+                let fits = c.native.iter().any(|n| n.platform == key)
+                    || (mac && !c.url.is_empty())
+                    || c.livecheck_url.is_some();
+                if fits {
+                    return Some((s.name.clone(), c));
+                }
             }
         }
         None
@@ -438,7 +498,7 @@ fn fetch_into(
     } else {
         std::fs::read_to_string(&etag_file).ok()
     };
-    let mut last_err = String::new();
+    let mut errs: Vec<String> = Vec::new();
     for url in urls {
         match net::get_if_changed(agent, url, etag.as_deref()) {
             Ok(None) => return Status::Unchanged,
@@ -463,14 +523,14 @@ fn fetch_into(
                             casks: c,
                         };
                     }
-                    Err(e) => last_err = format!("{url}: {e}"),
+                    Err(e) => errs.push(format!("{url}: {e}")),
                 },
-                Err(e) => last_err = e.to_string(),
+                Err(e) => errs.push(format!("{url}: {e}")),
             },
-            Err(e) => last_err = e.to_string(),
+            Err(e) => errs.push(e.to_string()),
         }
     }
-    Status::Failed(last_err)
+    Status::Failed(errs.join(" · "))
 }
 
 /// Keep only what this machine can use: the bottle digests for its own
@@ -647,6 +707,69 @@ mod tests {
         ], "casks": [
             {"token": "peek", "full_token": "jks-sys/pour-apps/peek", "tap": "jks-sys/pour-apps", "name": ["Peek"], "desc": "Viewer", "homepage": "h", "version": "1", "sha256": "no_check", "url": "u", "artifacts": [{"app": ["Peek.app"]}]}
         ]}).to_string().into_bytes()
+    }
+
+    #[test]
+    fn default_taps_reach_old_installs_and_removal_sticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("pour"));
+        paths.ensure().unwrap();
+        // an install from before pour-tools existed: taps.json lists only pour-apps
+        save_taps(
+            &paths,
+            &[Tap {
+                name: "jks-sys/pour-apps".into(),
+                url: "https://ipconfig.co.network/pour/apps/index.json".into(),
+            }],
+        )
+        .unwrap();
+        let names: Vec<String> = taps(&paths).into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["jks-sys/pour-apps", "jks-sys/pour-tools"]);
+        assert!(remove_tap(&paths, "jks-sys/pour-tools").unwrap());
+        assert!(!taps(&paths).iter().any(|t| t.name == "jks-sys/pour-tools"));
+        assert!(!remove_tap(&paths, "jks-sys/pour-tools").unwrap());
+    }
+
+    #[test]
+    fn a_tool_build_stands_in_where_no_bottle_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("pour"));
+        paths.ensure().unwrap();
+        let core = json!({"formulae": [
+            {"name": "gh", "full_name": "gh", "tap": "homebrew/core", "desc": "GitHub CLI", "homepage": "h", "versions": {"stable": "2.102.0"}, "revision": 0,
+             "bottle": {"stable": {"rebuild": 0, "root_url": "https://ghcr.io/v2/homebrew/core", "files": {"x86_64_linux": {"cellar": ":any_skip_relocation", "sha256": "ab".repeat(32)}}}},
+             "dependencies": [], "build_dependencies": [], "uses_from_macos": []}
+        ], "casks": []}).to_string();
+        import_core(&paths, core.as_bytes()).unwrap();
+        let tools = json!({"formulae": [], "casks": [
+            {"token": "gh", "full_token": "jks-sys/pour-tools/gh", "tap": "jks-sys/pour-tools", "name": ["gh"], "desc": "GitHub CLI", "homepage": "h", "version": "2.102.0", "sha256": "no_check", "url": "", "artifacts": [{"binary": ["gh"]}],
+             "pour": {"kind": "cli", "installers": [{"platform": "windows-x86_64", "url": "https://x/gh_windows_amd64.zip", "sha256": "cd".repeat(32), "kind": "zip"}]}}
+        ]}).to_string();
+        import_tap(&paths, "jks-sys/pour-tools", tools.as_bytes()).unwrap();
+        save_taps(
+            &paths,
+            &[Tap {
+                name: "jks-sys/pour-tools".into(),
+                url: "u".into(),
+            }],
+        )
+        .unwrap();
+        let reg = Registry::load(&paths).unwrap();
+        let win = crate::platform::Platform {
+            os: crate::platform::Os::Windows,
+            arch: crate::platform::Arch::X86_64,
+            macos_major: 0,
+            wsl: false,
+            ish: false,
+        };
+        let fbsd = crate::platform::Platform {
+            os: crate::platform::Os::FreeBsd,
+            ..win
+        };
+        let (src, c) = reg.native_alternative("gh", &win).expect("windows build");
+        assert_eq!(src, "jks-sys/pour-tools");
+        assert_eq!(crate::cask::program_names(&c), vec!["gh"]);
+        assert!(reg.native_alternative("gh", &fbsd).is_none());
     }
 
     #[test]

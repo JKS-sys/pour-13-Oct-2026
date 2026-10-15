@@ -1,8 +1,8 @@
 //! Command implementations.
 
+use crate::paint::{self, Hue};
 use crate::ui::{arrow, human_bytes, human_ms, Ui};
 use crate::{BundleAction, Cli, Command, KindFlags, RegistryAction, TapAction};
-use console::style;
 use pour_core::cask::{CaskEngine, CaskOptions};
 use pour_core::install::{Engine, Options};
 use pour_core::model::{Kind, Pkg};
@@ -74,11 +74,18 @@ impl Ctx<'_> {
         let t = std::time::Instant::now();
         let rep = registry::update(&self.paths, force);
         let show = |name: &str, st: &registry::Status| match st {
-            registry::Status::Updated { formulae, casks } => self
-                .ui
-                .ok(format!("{name}: {formulae} formulae, {casks} casks")),
-            registry::Status::Unchanged => self.ui.note(format!("{name}: already up to date")),
-            registry::Status::Failed(m) => self.ui.warn(format!("{name}: {m}")),
+            registry::Status::Updated { formulae, casks } => self.ui.ok(format!(
+                "{}: {} formulae, {} casks",
+                paint::tap(name),
+                paint::number(formulae),
+                paint::number(casks)
+            )),
+            registry::Status::Unchanged => self.ui.note(format!(
+                "{}: {}",
+                paint::tap(name),
+                paint::c(Hue::Green, "already up to date")
+            )),
+            registry::Status::Failed(m) => self.ui.warn(format!("{}: {m}", paint::tap(name))),
         };
         if let Some(c) = &rep.core {
             show("homebrew (core + cask)", c);
@@ -91,8 +98,11 @@ impl Ctx<'_> {
                 return Err(err(format!("could not fetch the index: {m}")));
             }
         }
-        self.ui
-            .note(format!("done in {}", human_ms(t.elapsed().as_millis())));
+        self.ui.note(format!(
+            "done in {}",
+            paint::b(Hue::Gold, human_ms(t.elapsed().as_millis()))
+        ));
+        self.ui.cue(crate::ui::Cue::Updated);
         Ok(())
     }
 
@@ -103,7 +113,16 @@ impl Ctx<'_> {
         for n in names {
             match reg.find(n, kind) {
                 Some((src, Pkg::Cask(c))) => casks.push((src, c)),
-                Some((_, Pkg::Formula(f))) => formulae.push(f.name.clone()),
+                Some((_, Pkg::Formula(f))) => {
+                    // No bottle for this system (Windows, FreeBSD, an old Mac)? A tool's own
+                    // build from pour-tools stands in, under the same name.
+                    let tags = self.platform.bottle_tags();
+                    let bottled = f.bottles.iter().any(|b| tags.contains(&b.tag));
+                    match (bottled, reg.native_alternative(&f.name, &self.platform)) {
+                        (false, Some((src, c))) => casks.push((src, c)),
+                        _ => formulae.push(f.name.clone()),
+                    }
+                }
                 None => {
                     let s = reg.suggest(n, 3);
                     let hint = if s.is_empty() {
@@ -218,9 +237,9 @@ impl Ctx<'_> {
             }
             if dry_run {
                 self.ui.println(format!(
-                    "  would install cask {} {}",
-                    style(&c.token).bold(),
-                    probe.version
+                    "  would install {} {}",
+                    paint::cask(&c.token),
+                    paint::version(&probe.version)
                 ));
                 continue;
             }
@@ -237,16 +256,33 @@ impl Ctx<'_> {
                 .artifacts
                 .iter()
                 .filter(|a| !a.contains(':'))
-                .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
-                .collect::<Vec<_>>()
+                .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).to_string())
+                .fold(Vec::<String>::new(), |mut v, a| {
+                    if !v.contains(&a) && a != "files" {
+                        v.push(a);
+                    }
+                    v
+                })
                 .join(", ");
-            self.ui.println(format!(
-                "  {} {} {} {} {}",
-                style("🍶").dim(),
-                style(&c.token).bold(),
-                style(&s.version).dim(),
-                style("installed").green(),
-                style(format!("{} · {}", human_bytes(s.bytes), human_ms(s.ms))).dim()
+            self.ui.cue(crate::ui::Cue::Poured);
+            let cli_tool = c.tap == "jks-sys/pour-tools";
+            self.ui.pour_animation(format!(
+                "{} {} {} {}",
+                if cli_tool {
+                    paint::tool(&c.token)
+                } else {
+                    paint::cask(&c.token)
+                },
+                paint::version(&s.version),
+                paint::b(Hue::Green, "installed"),
+                paint::c(
+                    Hue::Indigo,
+                    format!(
+                        "{} · {}",
+                        paint::number(human_bytes(s.bytes)),
+                        human_ms(s.ms)
+                    )
+                )
             ));
             if !what.is_empty() {
                 self.ui.note(what);
@@ -364,8 +400,13 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             if !formulae.is_empty() {
                 let removed = ctx.engine().uninstall(&formulae, *ignore_dependencies)?;
                 for r in removed {
-                    ui.ok(format!("uninstalled {r}"));
+                    ui.ok(format!(
+                        "{} {}",
+                        paint::formula(&r),
+                        paint::c(Hue::Orange, "uninstalled")
+                    ));
                 }
+                ui.cue(crate::ui::Cue::Removed);
             }
             for c in casks {
                 let warnings = ctx.casks().uninstall(&c, *zap)?;
@@ -373,9 +414,16 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     ui.warn(w);
                 }
                 ui.ok(format!(
-                    "uninstalled {c}{}",
-                    if *zap { " (zapped)" } else { "" }
+                    "{} {}{}",
+                    paint::cask(&c),
+                    paint::c(Hue::Orange, "uninstalled"),
+                    if *zap {
+                        paint::c(Hue::Red, " (zapped)")
+                    } else {
+                        String::new()
+                    }
                 ));
+                ui.cue(crate::ui::Cue::Removed);
             }
         }
         Command::Reinstall { kind, names } => {
@@ -438,10 +486,11 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     for (i, f) in &outdated {
                         if targets.contains(&i.receipt.name) {
                             ui.println(format!(
-                                "  {} {} → {}",
-                                style(&i.receipt.name).bold(),
-                                style(&i.receipt.version).dim(),
-                                style(f.pkg_version()).green()
+                                "  {} {} {} {}",
+                                paint::formula(&i.receipt.name),
+                                paint::old_version(&i.receipt.version),
+                                paint::c(Hue::Amber, "→"),
+                                paint::new_version(&f.pkg_version())
                             ));
                         }
                     }
@@ -464,6 +513,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                             },
                         )?;
                         print_summary(&ctx, &summary);
+                        ui.cue(crate::ui::Cue::Upgraded);
                     }
                 }
             }
@@ -490,10 +540,11 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 } else {
                     for (_, c, from, to) in &casks {
                         ui.println(format!(
-                            "  {} {} → {}",
-                            style(&c.token).bold(),
-                            style(from).dim(),
-                            style(to).green()
+                            "  {} {} {} {}",
+                            paint::cask(&c.token),
+                            paint::old_version(from),
+                            paint::c(Hue::Amber, "→"),
+                            paint::new_version(to)
                         ));
                     }
                     if !*dry_run {
@@ -513,10 +564,11 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 for (i, f) in resolve::outdated(&reg, &ctx.paths) {
                     any = true;
                     println!(
-                        "{} ({}) < {}",
-                        i.receipt.name,
-                        i.receipt.version,
-                        f.pkg_version()
+                        "{} {} {} {}",
+                        paint::formula(&i.receipt.name),
+                        paint::old_version(&i.receipt.version),
+                        paint::dim("→"),
+                        paint::new_version(&f.pkg_version())
                     );
                 }
             }
@@ -525,7 +577,13 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     if let Some((_, _, latest)) = cask_latest(&ctx, &reg, &i, false) {
                         if latest != i.receipt.version {
                             any = true;
-                            println!("{} ({}) != {}", i.receipt.name, i.receipt.version, latest);
+                            println!(
+                                "{} {} {} {}",
+                                paint::cask(&i.receipt.name),
+                                paint::old_version(&i.receipt.version),
+                                paint::dim("→"),
+                                paint::new_version(&latest)
+                            );
                         }
                     }
                 }
@@ -541,14 +599,17 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             let hits = reg.search(&q, ctx.kind(kind), *limit);
             let took = t.elapsed();
             if cli.json {
-                let v: Vec<serde_json::Value> = hits.iter().map(|(src, h)| serde_json::json!({"name": h.name, "kind": h.kind.to_string(), "desc": h.desc, "source": src})).collect();
-                println!("{}", serde_json::to_string_pretty(&v)?);
+                let v: Vec<serde_json::Value> = hits.iter().map(|(src, h)| serde_json::json!({"name": h.name, "kind": h.kind.to_string(), "desc": h.desc, "source": src, "install": if h.kind == Kind::Cask { format!("pour install --cask {}", h.name) } else { format!("pour install {}", h.name) }})).collect();
+                paint::print_json(&serde_json::Value::Array(v));
                 return Ok(());
             }
             if hits.is_empty() {
                 let s = reg.suggest(&q, 5);
                 if s.is_empty() {
-                    ui.println(format!("No formulae or casks found for \"{q}\"."));
+                    ui.println(format!(
+                        "No formulae or casks found for \"{}\".",
+                        paint::b(Hue::Amber, &q)
+                    ));
                 } else {
                     ui.println(format!(
                         "No exact match for \"{q}\". Did you mean: {}?",
@@ -572,49 +633,71 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     .collect();
             // formulae first, then casks — each group keeps its ranking
             let mut ordered: Vec<&(String, pour_core::index::Hit)> = Vec::with_capacity(hits.len());
+            let is_tool = |src: &str| src == "jks-sys/pour-tools";
             ordered.extend(hits.iter().filter(|(_, h)| h.kind == Kind::Formula));
-            ordered.extend(hits.iter().filter(|(_, h)| h.kind == Kind::Cask));
-            let mut last_kind = None;
+            ordered.extend(
+                hits.iter()
+                    .filter(|(s, h)| h.kind == Kind::Cask && is_tool(s)),
+            );
+            ordered.extend(
+                hits.iter()
+                    .filter(|(s, h)| h.kind == Kind::Cask && !is_tool(s)),
+            );
+            let mut last_group = None;
             for (src, h) in ordered {
-                if last_kind != Some(h.kind) {
-                    last_kind = Some(h.kind);
-                    ui.println(format!(
-                        "{} {}",
-                        arrow(),
-                        style(if h.kind == Kind::Formula {
-                            "Formulae"
-                        } else {
-                            "Casks"
-                        })
-                        .bold()
-                    ));
+                let group = if h.kind == Kind::Formula {
+                    0
+                } else if is_tool(src) {
+                    1
+                } else {
+                    2
+                };
+                if last_group != Some(group) {
+                    last_group = Some(group);
+                    match group {
+                        0 => ui.section("Formulae (command-line tools · pour install NAME)", 1),
+                        1 => ui.section(
+                            "Tools with their own builds for every system (pour install NAME)",
+                            3,
+                        ),
+                        _ => ui.section("Casks (apps · pour install --cask NAME)", 0),
+                    }
                 }
                 let mark = if (h.kind == Kind::Formula && installed_f.contains(&h.name))
                     || (h.kind == Kind::Cask && installed_c.contains(&h.name))
                 {
-                    style(" ✔").green().to_string()
+                    paint::b(Hue::Green, " ✔")
                 } else {
                     String::new()
                 };
                 let tap = if src == "homebrew" {
                     String::new()
                 } else {
-                    style(format!(" [{src}]")).dim().to_string()
+                    format!(
+                        " {}{}{}",
+                        paint::b(paint::DEPTH[0], "["),
+                        paint::tap(src),
+                        paint::b(paint::DEPTH[0], "]")
+                    )
                 };
                 let desc = if h.desc.is_empty() {
                     String::new()
                 } else {
                     format!(": {}", h.desc)
                 };
-                ui.println(format!(
-                    "{}{mark}{tap}{}",
-                    style(&h.name).bold(),
-                    style(desc).dim()
-                ));
+                let name = if src == "jks-sys/pour-tools" {
+                    paint::tool(&h.name)
+                } else if h.kind == Kind::Formula {
+                    paint::formula(&h.name)
+                } else {
+                    paint::cask(&h.name)
+                };
+                ui.println(format!("{name}{mark}{tap}{}", paint::dim(&desc)));
             }
+            ui.cue(crate::ui::Cue::Found);
             ui.note(format!(
                 "{} result{} in {}",
-                hits.len(),
+                paint::number(hits.len()),
                 if hits.len() == 1 { "" } else { "s" },
                 human_ms(took.as_millis())
                     .replace("0 ms", &format!("{:.2} ms", took.as_secs_f64() * 1000.0))
@@ -634,55 +717,152 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 }
             }
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                paint::print_json(&serde_json::Value::Array(out));
             }
         }
         Command::List { kind, versions } => {
             let k = ctx.kind(kind);
             let formulae = receipt::installed_formulae(&ctx.paths);
             let casks = receipt::installed_casks(&ctx.paths);
+            // What Homebrew installed on this machine, read from its Cellar and Caskroom,
+            // so `pour list` shows everything — and which of it Pour can install too.
+            let (bf, bc) = pour_core::homebrew::installed(&ctx.paths.prefix);
+            let reg = Registry::load(&ctx.paths).ok();
+            let known = |n: &str, kind: Kind| -> bool {
+                reg.as_ref()
+                    .is_some_and(|r| r.find(n, Some(kind)).is_some())
+            };
             if cli.json {
                 let v = serde_json::json!({
                     "formulae": formulae.iter().map(|i| serde_json::json!({"name": i.receipt.name, "version": i.receipt.version, "active": i.active, "on_request": i.receipt.installed_on_request, "deps": i.receipt.runtime_deps})).collect::<Vec<_>>(),
                     "casks": casks.iter().map(|i| serde_json::json!({"token": i.receipt.name, "version": i.receipt.version, "artifacts": i.receipt.artifacts})).collect::<Vec<_>>(),
+                    "homebrew": {
+                        "formulae": bf.iter().map(|i| serde_json::json!({"name": i.name, "version": i.version, "on_request": i.on_request, "in_pour": known(&i.name, Kind::Formula), "path": i.path})).collect::<Vec<_>>(),
+                        "casks": bc.iter().map(|i| serde_json::json!({"token": i.name, "version": i.version, "in_pour": known(&i.name, Kind::Cask), "path": i.path})).collect::<Vec<_>>(),
+                    },
                 });
-                println!("{}", serde_json::to_string_pretty(&v)?);
+                paint::print_json(&v);
                 return Ok(());
             }
-            if k != Some(Kind::Cask) {
-                if k.is_none() && !formulae.is_empty() {
-                    ui.println(format!("{} Formulae", arrow()));
-                }
-                print_columns(
+            let show =
+                |name: &str, ver: &str, paint_name: &dyn Fn(&str) -> String| -> (String, usize) {
+                    if *versions {
+                        (
+                            format!("{} {}", paint_name(name), paint::version(ver)),
+                            name.len() + 1 + ver.len(),
+                        )
+                    } else {
+                        (paint_name(name), name.len())
+                    }
+                };
+            let mut section = 0;
+            if k != Some(Kind::Cask) && !formulae.is_empty() {
+                ui.section(
+                    format!(
+                        "Formulae ({})",
+                        formulae.iter().filter(|i| i.active).count()
+                    ),
+                    1,
+                );
+                section += 1;
+                print_columns_colored(
                     &formulae
                         .iter()
                         .filter(|i| i.active || *versions)
-                        .map(|i| {
-                            if *versions {
-                                format!("{} {}", i.receipt.name, i.receipt.version)
-                            } else {
-                                i.receipt.name.clone()
-                            }
-                        })
+                        .map(|i| show(&i.receipt.name, &i.receipt.version, &|n| paint::formula(n)))
                         .collect::<Vec<_>>(),
                 );
             }
-            if k != Some(Kind::Formula) && !casks.is_empty() {
-                if k.is_none() {
-                    ui.println(format!("{} Casks", arrow()));
-                }
-                print_columns(
-                    &casks
+            let (tools, apps): (Vec<_>, Vec<_>) = casks
+                .iter()
+                .partition(|i| i.receipt.tap == "jks-sys/pour-tools");
+            if k != Some(Kind::Formula) && !tools.is_empty() {
+                ui.section(format!("Tools ({})", tools.len()), 3);
+                section += 1;
+                print_columns_colored(
+                    &tools
                         .iter()
-                        .map(|i| {
-                            if *versions {
-                                format!("{} {}", i.receipt.name, i.receipt.version)
-                            } else {
-                                i.receipt.name.clone()
-                            }
-                        })
+                        .map(|i| show(&i.receipt.name, &i.receipt.version, &|n| paint::tool(n)))
                         .collect::<Vec<_>>(),
                 );
+            }
+            if k != Some(Kind::Formula) && !apps.is_empty() {
+                ui.section(format!("Casks ({})", apps.len()), 0);
+                section += 1;
+                print_columns_colored(
+                    &apps
+                        .iter()
+                        .map(|i| show(&i.receipt.name, &i.receipt.version, &|n| paint::cask(n)))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let bf: Vec<_> = bf
+                .iter()
+                .filter(|i| {
+                    k != Some(Kind::Cask) && formulae.iter().all(|p| p.receipt.name != i.name)
+                })
+                .collect();
+            let bc: Vec<_> = bc
+                .iter()
+                .filter(|i| {
+                    k != Some(Kind::Formula) && casks.iter().all(|p| p.receipt.name != i.name)
+                })
+                .collect();
+            if !bf.is_empty() || !bc.is_empty() {
+                let mut missing: Vec<String> = Vec::new();
+                for (items, kind, label, idx) in [
+                    (&bf, Kind::Formula, "Installed by Homebrew — formulae", 9),
+                    (&bc, Kind::Cask, "Installed by Homebrew — casks", 5),
+                ] {
+                    if items.is_empty() {
+                        continue;
+                    }
+                    let in_pour = items.iter().filter(|i| known(&i.name, kind)).count();
+                    ui.section(format!("{label} ({}, {in_pour} in Pour)", items.len()), idx);
+                    let frac = in_pour as f64 / items.len().max(1) as f64;
+                    ui.println(format!(
+                        "  {} {} known to Pour",
+                        paint::bar(frac, 24, Hue::Green),
+                        paint::number(format!("{:.0}%", frac * 100.0))
+                    ));
+                    print_columns_colored(
+                        &items
+                            .iter()
+                            .map(|i| {
+                                let ok = known(&i.name, kind);
+                                if !ok {
+                                    missing.push(i.name.clone());
+                                }
+                                let f = |n: &str| {
+                                    if ok {
+                                        paint::brew(n)
+                                    } else {
+                                        paint::c(Hue::Red, n)
+                                    }
+                                };
+                                show(&i.name, &i.version, &f)
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                if missing.is_empty() {
+                    ui.note(format!(
+                        "every one of them is in Pour: {} installs them with Pour (Homebrew stays as it is)",
+                        paint::cmd("pour migrate")
+                    ));
+                } else {
+                    ui.note(format!(
+                        "{} not in Pour's index yet ({}): run {} — or they came from a tap Pour does not follow (pour tap add)",
+                        paint::number(missing.len()),
+                        missing.join(", "),
+                        paint::cmd("pour update")
+                    ));
+                }
+            } else if section == 0 {
+                ui.note(format!(
+                    "nothing installed yet — try {}",
+                    paint::cmd("pour install jq")
+                ));
             }
         }
         Command::Link { overwrite, names } => {
@@ -814,90 +994,169 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 .unwrap_or_default();
             if cli.json {
                 let out: Vec<serde_json::Value> = casks.iter().map(|c| serde_json::json!({"token": c["token"], "name": c["name"].get(0), "version": c["version"], "desc": c["desc"], "source": c.pointer("/pour/source").cloned().unwrap_or_else(|| "pour-apps".into())})).collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                paint::print_json(&serde_json::Value::Array(out));
                 return Ok(());
             }
             let installed: std::collections::HashSet<String> = receipt::installed_casks(&ctx.paths)
                 .into_iter()
                 .map(|i| i.receipt.name)
                 .collect();
-            ui.println(format!(
-                "{} {} {}",
-                arrow(),
-                style("Apps by Jagadeesh Kumar S").bold(),
-                style(format!("({})", casks.len())).dim()
-            ));
+            ui.section(format!("Apps by Jagadeesh Kumar S ({})", casks.len()), 0);
             for c in &casks {
                 let token = c["token"].as_str().unwrap_or("");
                 let name = c["name"].get(0).and_then(|x| x.as_str()).unwrap_or(token);
                 let ver = c["version"].as_str().unwrap_or("");
                 let new = c.pointer("/pour/source").and_then(|x| x.as_str()) == Some("dashboard");
                 let mark = if installed.contains(token) {
-                    style(" ✔").green().to_string()
+                    paint::b(Hue::Green, " ✔")
                 } else {
                     String::new()
                 };
+                let hue = paint::DEPTH[casks
+                    .iter()
+                    .position(|x| x["token"] == c["token"])
+                    .unwrap_or(0)
+                    % paint::DEPTH.len()];
                 ui.println(format!(
                     "  {}{} {}{}  {}",
-                    style(format!("{token:<10}")).cyan().bold(),
+                    paint::b(hue, format!("{token:<10}")),
                     mark,
-                    style(ver).blue(),
+                    paint::version(ver),
                     if new {
-                        style(" new").yellow().to_string()
+                        paint::b(Hue::Lime, " new")
                     } else {
                         String::new()
                     },
-                    style(c["desc"].as_str().unwrap_or(name)).dim()
+                    paint::dim(c["desc"].as_str().unwrap_or(name))
                 ));
             }
             ui.println(format!(
-                "{} pour install --cask <app>",
-                style("Install:").bold()
+                "{} {}",
+                paint::b(Hue::Gold, "Install:"),
+                paint::cmd("pour install --cask <app>")
             ));
         }
         Command::Register {
             app,
+            cli: is_cli,
             name,
-            line,
+            desc,
+            homepage,
             version,
             feed,
+            urls,
+            bins,
+            app_bundle,
+            key,
         } => {
-            let ok = app.len() >= 2
-                && app.len() <= 24
-                && app.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            let ok = (2..=40).contains(&app.len())
                 && app
                     .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && app.chars().all(|c| {
+                    c.is_ascii_lowercase()
+                        || c.is_ascii_digit()
+                        || matches!(c, '-' | '.' | '+' | '@')
+                });
             if !ok {
-                return Err(err("the app id must be 2–24 lowercase letters, digits or dashes, starting with a letter"));
+                return Err(err("the id must be 2–40 lowercase letters, digits, dashes, dots, + or @, starting with a letter or digit"));
             }
+            let mut platforms = serde_json::Map::new();
+            for u in urls {
+                let (plat, rest) = u
+                    .split_once('=')
+                    .ok_or_else(|| err(format!("--url {u}: write it as PLATFORM=URL#SHA256")))?;
+                let (url, sha) = match rest.rsplit_once('#') {
+                    Some((a, b)) if b.len() == 64 && b.chars().all(|c| c.is_ascii_hexdigit()) => {
+                        (a, Some(b.to_ascii_lowercase()))
+                    }
+                    _ => (rest, None),
+                };
+                platforms.insert(
+                    plat.to_string(),
+                    serde_json::json!({"url": url, "sha256": sha}),
+                );
+            }
+            let key = key
+                .clone()
+                .or_else(|| std::env::var("POUR_REGISTER_KEY").ok())
+                .or_else(|| std::env::var("APPS_API_KEY").ok())
+                .filter(|k| !k.is_empty());
+            let body = serde_json::json!({
+                "kind": if *is_cli { "cli" } else { "cask" },
+                "token": app, "name": name, "desc": desc, "homepage": homepage,
+                "version": version, "feed": feed, "platforms": platforms,
+                "bin": bins, "app": app_bundle, "key": key,
+                "from": ctx.platform.describe(),
+            });
             let url = std::env::var("POUR_REGISTER_URL")
-                .unwrap_or_else(|_| "https://ipconfig.co.network/pour/api/apps/register".into());
-            let body = serde_json::json!({"app": app, "name": name, "line": line, "version": version, "download_url": feed, "platform": ctx.platform.describe()});
+                .unwrap_or_else(|_| "https://ipconfig.co.network/pour/api/register".into());
             let (code, text) = pour_core::net::post_json(&pour_core::net::agent(), &url, &body)
-                .map_err(|e| err(format!("could not reach the dashboard: {e}")))?;
+                .map_err(|e| err(format!("could not reach {url}: {e}")))?;
             let j: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            if code >= 400 {
+            if cli.json {
+                paint::print_json(&j);
+            }
+            let problems: Vec<String> = j["problems"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if code >= 400 || j["ok"].as_bool() == Some(false) {
+                for p in &problems {
+                    ui.println(format!("  {} {p}", paint::b(Hue::Red, "✗")));
+                }
                 return Err(err(j["message"]
                     .as_str()
                     .or(j["error"].as_str())
-                    .unwrap_or("the dashboard refused it")
+                    .unwrap_or("it did not qualify")
                     .to_string()));
             }
-            let status = j["status"].as_str().unwrap_or("pending");
+            ui.cue(crate::ui::Cue::Registered);
+            let install = j["install"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!("pour install {}{app}", if *is_cli { "" } else { "--cask " })
+                });
             ui.println(format!(
-                "{} {} {} on the dashboard ({status})",
-                style("✓").green(),
-                style(app).cyan().bold(),
-                if j["added"].as_bool().unwrap_or(false) {
-                    "registered"
+                "{} {} {} — {}",
+                paint::b(Hue::Green, "✓"),
+                if *is_cli {
+                    paint::tool(app)
                 } else {
-                    "is already"
-                }
+                    paint::cask(app)
+                },
+                paint::b(
+                    Hue::Green,
+                    if j["added"].as_bool().unwrap_or(false) {
+                        "registered and listed"
+                    } else {
+                        "updated"
+                    }
+                ),
+                paint::cmd(&install)
             ));
-            if status != "on" {
-                ui.println("  The owner switches it on in the Apps tab; then `pour update && pour install --cask ".to_string() + app + "` works everywhere.");
+            for c in j["checks"].as_array().into_iter().flatten() {
+                if let Some(c) = c.as_str() {
+                    ui.println(format!("  {} {}", paint::b(Hue::Green, "✓"), paint::dim(c)));
+                }
             }
+            if let Some(k) = j["key"].as_str() {
+                ui.println(format!(
+                    "  {} keep this key to update it later: {}",
+                    paint::b(Hue::Amber, "key"),
+                    paint::b(Hue::Gold, k)
+                ));
+            }
+            ui.note(format!(
+                "everyone gets it after {}",
+                paint::cmd("pour update")
+            ));
         }
         Command::Doctor => doctor(&ctx)?,
         Command::Cleanup { dry_run } => {
@@ -924,7 +1183,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 ui.note(format!("{} reclaimable", human_bytes(total)));
             } else {
                 let freed = ctx.engine().cleanup(false)?;
-                ui.ok(format!("freed {}", human_bytes(freed)));
+                ui.ok(format!("freed {}", paint::b(Hue::Gold, human_bytes(freed))));
+                ui.cue(crate::ui::Cue::Cleaned);
             }
         }
         Command::Tap { action } => match action {
@@ -945,13 +1205,9 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 ctx.update(false)?;
             }
             Some(TapAction::Remove { name }) => {
-                let mut list = registry::taps(&ctx.paths);
-                let before = list.len();
-                list.retain(|t| &t.name != name);
-                if list.len() == before {
+                if !registry::remove_tap(&ctx.paths, name)? {
                     return Err(err(format!("no tap named {name}")));
                 }
-                registry::save_taps(&ctx.paths, &list)?;
                 registry::remove_tap_file(&ctx.paths, name);
                 ui.ok(format!("removed {name}"));
             }
@@ -1035,33 +1291,38 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             }
         },
         Command::Migrate { dry_run } => {
-            let brew = std::process::Command::new("brew")
-                .args(["list", "--formula", "-1", "--installed-on-request"])
-                .output()
-                .or_else(|_| std::process::Command::new("brew").args(["leaves"]).output())
-                .map_err(|_| err("brew is not on PATH"))?;
-            let names: Vec<String> = String::from_utf8_lossy(&brew.stdout)
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
+            // Read Homebrew's Cellar and Caskroom directly: works without `brew` on PATH
+            // (Keel, cron, a shell that never loaded brew shellenv).
+            let (bf, bc) = pour_core::homebrew::installed(&ctx.paths.prefix);
+            let names: Vec<String> = bf
+                .iter()
+                .filter(|i| i.on_request)
+                .map(|i| i.name.clone())
                 .collect();
-            let casks = std::process::Command::new("brew")
-                .args(["list", "--cask", "-1"])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .map(|l| l.trim().to_string())
-                        .filter(|l| !l.is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            ui.head(format!(
-                "Homebrew has {} formulae and {} casks installed on request",
-                names.len(),
-                casks.len()
-            ));
+            let casks: Vec<String> = bc.iter().map(|i| i.name.clone()).collect();
+            ui.section(
+                format!(
+                    "Homebrew has {} formulae on request ({} with dependencies) and {} casks",
+                    names.len(),
+                    bf.len(),
+                    casks.len()
+                ),
+                9,
+            );
+            if names.is_empty() && casks.is_empty() {
+                ui.note("nothing to migrate: no Homebrew Cellar or Caskroom on this machine");
+                return Ok(());
+            }
             let reg = ctx.registry()?;
+            let (names, unknown): (Vec<String>, Vec<String>) = names
+                .into_iter()
+                .partition(|n| reg.find(n, Some(Kind::Formula)).is_some());
+            if !unknown.is_empty() {
+                ui.warn(format!(
+                    "not in Pour's index (left with Homebrew): {}",
+                    unknown.join(", ")
+                ));
+            }
             if !names.is_empty() {
                 let plan = resolve::plan(
                     &reg,
@@ -1241,15 +1502,20 @@ fn ago(ts: u64) -> String {
     }
 }
 
-fn print_columns(items: &[String]) {
+/// Columns of coloured names: (text with colour codes, visible width).
+fn print_columns_colored(items: &[(String, usize)]) {
     if items.is_empty() {
         return;
     }
     let width = console::Term::stdout().size().1 as usize;
-    let w = items.iter().map(|s| s.len()).max().unwrap_or(10) + 2;
+    let w = items.iter().map(|s| s.1).max().unwrap_or(10) + 2;
     let cols = (width / w).max(1);
     for row in items.chunks(cols) {
-        let line: String = row.iter().map(|s| format!("{s:<w$}")).collect();
+        let mut line = String::new();
+        for (text, vis) in row {
+            line.push_str(text);
+            line.push_str(&" ".repeat(w.saturating_sub(*vis)));
+        }
         println!("{}", line.trim_end());
     }
 }
@@ -1268,8 +1534,8 @@ fn print_plan(ctx: &Ctx, plan: &resolve::Plan) {
         .map(|s| {
             format!(
                 "{} {}",
-                s.formula.name,
-                style(s.formula.pkg_version()).dim()
+                paint::c(Hue::Teal, &s.formula.name),
+                paint::version(&s.formula.pkg_version())
             )
         })
         .collect();
@@ -1279,16 +1545,24 @@ fn print_plan(ctx: &Ctx, plan: &resolve::Plan) {
         .map(|s| {
             format!(
                 "{} {}",
-                style(&s.formula.name).bold(),
-                style(s.formula.pkg_version()).dim()
+                paint::formula(&s.formula.name),
+                paint::version(&s.formula.pkg_version())
             )
         })
         .collect();
     if !deps.is_empty() {
-        ctx.ui.head(format!("Dependencies: {}", deps.join(", ")));
+        ctx.ui.println(format!(
+            "{} {}",
+            paint::heading("Dependencies:", 3),
+            deps.join(&paint::dim(", "))
+        ));
     }
     if !main.is_empty() {
-        ctx.ui.head(format!("Installing: {}", main.join(", ")));
+        ctx.ui.println(format!(
+            "{} {}",
+            paint::heading("Installing:", 1),
+            main.join(&paint::dim(", "))
+        ));
     }
 }
 
@@ -1389,24 +1663,29 @@ fn print_summary(ctx: &Ctx, s: &pour_core::install::Summary) {
     }
     if !s.installed.is_empty() {
         let line = format!(
-            "{} package{} in {} · {} downloaded{}",
-            s.installed.len(),
+            "{} package{} poured in {} {} {} downloaded{}",
+            paint::number(s.installed.len()),
             if s.installed.len() == 1 { "" } else { "s" },
-            human_ms(s.ms),
-            human_bytes(s.bytes_downloaded),
+            paint::b(Hue::Gold, human_ms(s.ms)),
+            paint::dim("·"),
+            paint::c(Hue::Sky, human_bytes(s.bytes_downloaded)),
             if s.store_hits > 0 {
-                format!(" · {} from the store", s.store_hits)
+                format!(
+                    " {} {} from the store",
+                    paint::dim("·"),
+                    paint::number(s.store_hits)
+                )
             } else {
                 String::new()
             }
         );
-        ctx.ui.ok(line);
+        ctx.ui.pour_animation(line);
     }
     for (name, text) in &s.caveats {
         ctx.ui.println(format!(
-            "\n{} Caveats for {}\n{}",
-            arrow(),
-            style(name).bold(),
+            "\n{} {}\n{}",
+            paint::heading("Caveats for", 5),
+            paint::formula(name),
             text.trim()
         ));
     }
@@ -1423,27 +1702,43 @@ fn pkg_json(pkg: &Pkg, src: &str) -> serde_json::Value {
     }
 }
 
+/// `pour info` on a package Homebrew installed here says so.
+fn brew_line(ctx: &Ctx, name: &str, cask: bool) {
+    let (f, c) = pour_core::homebrew::installed(&ctx.paths.prefix);
+    let hit = if cask { c } else { f };
+    if let Some(i) = hit.iter().find(|i| i.name == name) {
+        ctx.ui.println(format!(
+            "{} {} {} {}",
+            paint::b(Hue::Amber, "Homebrew:"),
+            paint::version(&i.version),
+            paint::path(&i.path.display().to_string()),
+            paint::dim("(pour migrate installs it with Pour; Homebrew stays as it is)")
+        ));
+    }
+}
+
 fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
     let ui = ctx.ui;
     match pkg {
         Pkg::Formula(f) => {
             let inst = receipt::find_formula(&ctx.paths, &f.name);
             ui.println(format!(
-                "{} {}{}",
+                "{} {}{} {}{}",
                 arrow(),
-                style(&f.full_name).bold(),
-                style(format!(
-                    ": stable {}{}",
-                    f.pkg_version(),
-                    if f.keg_only { ", keg-only" } else { "" }
-                ))
-                .dim()
+                paint::formula(&f.full_name),
+                paint::dim(": stable"),
+                paint::version(&f.pkg_version()),
+                if f.keg_only {
+                    paint::c(Hue::Orange, ", keg-only")
+                } else {
+                    String::new()
+                }
             ));
             if !f.desc.is_empty() {
                 ui.println(&f.desc);
             }
             if !f.homepage.is_empty() {
-                ui.println(style(&f.homepage).underlined().to_string());
+                ui.println(paint::url(&f.homepage));
             }
             if f.deprecated {
                 ui.warn(format!(
@@ -1466,28 +1761,30 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
             match &inst {
                 Some(i) => ui.println(format!(
                     "{} {} ({} files){}",
-                    style("Installed:").bold(),
-                    i.path.display(),
+                    paint::b(Hue::Green, "Installed:"),
+                    paint::path(&i.path.display().to_string()),
                     i.receipt.links.len().max(i.receipt.links_len),
                     if i.receipt.pinned { " [pinned]" } else { "" }
                 )),
                 None => ui.println(format!(
-                    "{} {}",
-                    style("Not installed").dim(),
-                    style(format!("— pour install {}", f.name)).dim()
+                    "{} {} {}",
+                    paint::c(Hue::Slate, "Not installed"),
+                    paint::dim("—"),
+                    paint::cmd(&format!("pour install {}", f.name))
                 )),
             }
+            brew_line(ctx, &f.name, false);
             let tags = ctx.platform.bottle_tags();
             match f.bottle_for(&tags) {
                 Some(b) => ui.println(format!(
                     "{} {} ({})",
-                    style("Bottle:").bold(),
-                    b.tag,
-                    b.cellar.as_str()
+                    paint::b(Hue::Sky, "Bottle:"),
+                    paint::c(Hue::Cyan, &b.tag),
+                    paint::dim(&b.cellar.as_str())
                 )),
                 None => ui.println(format!(
                     "{} none for {} (available: {})",
-                    style("Bottle:").bold(),
+                    paint::b(Hue::Sky, "Bottle:"),
                     ctx.platform.native_tag(),
                     f.bottles
                         .iter()
@@ -1497,7 +1794,11 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                 )),
             }
             if !f.license.is_empty() {
-                ui.println(format!("{} {}", style("License:").bold(), f.license));
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Violet, "License:"),
+                    paint::c(Hue::Indigo, &f.license)
+                ));
             }
             let deps = f.runtime_deps(ctx.platform.os == Os::Linux);
             if !deps.is_empty() {
@@ -1505,62 +1806,63 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                     .iter()
                     .map(|d| {
                         if receipt::find_formula(&ctx.paths, d).is_some() {
-                            format!("{d} {}", style("✔").green())
+                            format!("{} {}", paint::formula(d), paint::b(Hue::Green, "✔"))
                         } else {
-                            d.clone()
+                            paint::c(Hue::Teal, d)
                         }
                     })
                     .collect();
                 ui.println(format!(
                     "{} {}",
-                    style("Dependencies:").bold(),
+                    paint::b(Hue::Lime, "Dependencies:"),
                     shown.join(", ")
                 ));
             }
             if !f.build_deps.is_empty() {
                 ui.println(format!(
                     "{} {}",
-                    style("Build dependencies:").dim(),
-                    style(f.build_deps.join(", ")).dim()
+                    paint::c(Hue::Slate, "Build dependencies:"),
+                    paint::dim(&f.build_deps.join(", "))
                 ));
             }
             if !f.aliases.is_empty() {
                 ui.println(format!(
                     "{} {}",
-                    style("Aliases:").bold(),
+                    paint::b(Hue::Orange, "Aliases:"),
                     f.aliases.join(", ")
                 ));
             }
             if !f.conflicts_with.is_empty() {
                 ui.println(format!(
                     "{} {}",
-                    style("Conflicts with:").bold(),
+                    paint::b(Hue::Red, "Conflicts with:"),
                     f.conflicts_with.join(", ")
                 ));
             }
             if let Some(c) = &f.caveats {
-                ui.println(format!("{} Caveats\n{}", arrow(), c.trim()));
+                ui.println(format!("{}\n{}", paint::heading("Caveats", 5), c.trim()));
             }
             if src != "homebrew" {
-                ui.println(format!("{} {}", style("Registry:").bold(), src));
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Violet, "Registry:"),
+                    paint::tap(src)
+                ));
             }
         }
         Pkg::Cask(c) => {
             let inst = receipt::find_cask(&ctx.paths, &c.token);
             ui.println(format!(
-                "{} {}{}",
+                "{} {}{} {}{}",
                 arrow(),
-                style(&c.full_token).bold(),
-                style(format!(
-                    ": {}{}",
-                    c.version,
-                    if c.auto_updates {
-                        " (auto_updates)"
-                    } else {
-                        ""
-                    }
-                ))
-                .dim()
+                paint::cask(&c.full_token),
+                paint::dim(":"),
+                paint::version(&c.version),
+                if c.auto_updates {
+                    paint::c(Hue::Indigo, " (auto_updates)")
+                } else {
+                    String::new()
+                }
             ));
             if !c.names.is_empty() {
                 ui.println(c.names.join(", "));
@@ -1569,27 +1871,47 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                 ui.println(&c.desc);
             }
             if !c.homepage.is_empty() {
-                ui.println(style(&c.homepage).underlined().to_string());
+                ui.println(paint::url(&c.homepage));
             }
             match &inst {
                 Some(i) => ui.println(format!(
                     "{} {} {}",
-                    style("Installed:").bold(),
-                    i.receipt.version,
-                    style(i.receipt.artifacts.join(", ")).dim()
+                    paint::b(Hue::Green, "Installed:"),
+                    paint::version(&i.receipt.version),
+                    paint::path(&i.receipt.artifacts.join(", "))
                 )),
                 None => ui.println(format!(
-                    "{} {}",
-                    style("Not installed").dim(),
-                    style(format!("— pour install --cask {}", c.token)).dim()
+                    "{} {} {}",
+                    paint::c(Hue::Slate, "Not installed"),
+                    paint::dim("—"),
+                    paint::cmd(&format!(
+                        "pour install {}{}",
+                        if c.tap == "jks-sys/pour-tools" {
+                            ""
+                        } else {
+                            "--cask "
+                        },
+                        c.token
+                    ))
                 )),
             }
-            let (url, sha, ver, _) = c.download_for(&ctx.platform.cask_variations());
+            brew_line(ctx, &c.token, true);
+            let (mut url, mut sha, ver, _) = c.download_for(&ctx.platform.cask_variations());
+            if url.is_empty() || ctx.platform.os != Os::MacOs {
+                let key = pour_core::cask::native_key(&ctx.platform);
+                if let Some(n) = c.native.iter().find(|n| n.platform == key) {
+                    url = n.url.clone();
+                    sha = n.sha256.clone();
+                }
+            }
+            if url.is_empty() {
+                url = format!("none for {}", ctx.platform.describe());
+            }
             ui.println(format!(
                 "{} {} {}",
-                style("Download:").bold(),
-                url,
-                style(format!(
+                paint::b(Hue::Sky, "Download:"),
+                paint::url(&url),
+                paint::dim(&format!(
                     "({}{})",
                     ver,
                     if sha.is_none() {
@@ -1598,7 +1920,6 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                         ""
                     }
                 ))
-                .dim()
             ));
             if let Ok(arts) = serde_json::from_str::<serde_json::Value>(&c.artifacts) {
                 let mut kinds: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1629,11 +1950,15 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                 }
                 for (k, v) in kinds {
                     if k == "font" && v.len() > 3 {
-                        ui.println(format!("{} {} fonts", style("Artifacts:").bold(), v.len()));
+                        ui.println(format!(
+                            "{} {} fonts",
+                            paint::b(Hue::Lime, "Artifacts:"),
+                            v.len()
+                        ));
                     } else {
                         ui.println(format!(
                             "{} {} ({k})",
-                            style("Artifacts:").bold(),
+                            paint::b(Hue::Lime, "Artifacts:"),
                             v.join(", ")
                         ));
                     }
@@ -1642,7 +1967,7 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
             if !c.native.is_empty() {
                 ui.println(format!(
                     "{} {}",
-                    style("Also for:").bold(),
+                    paint::b(Hue::Teal, "Also for:"),
                     c.native
                         .iter()
                         .map(|n| n.platform.clone())
@@ -1653,7 +1978,7 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
             if let Some(d) = &c.depends_on {
                 ui.println(format!(
                     "{} {}",
-                    style("Requires:").bold(),
+                    paint::b(Hue::Orange, "Requires:"),
                     describe_depends_on(d)
                 ));
             }
@@ -1667,10 +1992,14 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                 ));
             }
             if let Some(cv) = &c.caveats {
-                ui.println(format!("{} Caveats\n{}", arrow(), cv.trim()));
+                ui.println(format!("{}\n{}", paint::heading("Caveats", 5), cv.trim()));
             }
             if src != "homebrew" {
-                ui.println(format!("{} {}", style("Registry:").bold(), src));
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Violet, "Registry:"),
+                    paint::tap(src)
+                ));
             }
         }
     }
@@ -1817,7 +2146,17 @@ fn doctor(ctx: &Ctx) -> Result<()> {
     if let Ok(brew) = std::process::Command::new("brew").arg("--prefix").output() {
         let bp = String::from_utf8_lossy(&brew.stdout).trim().to_string();
         if !bp.is_empty() {
-            ui.note(format!("Homebrew is also installed at {bp}; both can coexist (Pour never writes there). `pour migrate` copies its packages."));
+            {
+                let (bf, bc) = pour_core::homebrew::installed(&ctx.paths.prefix);
+                ui.note(format!(
+                    "Homebrew is also installed at {} with {} formulae and {} casks; both can coexist (Pour never writes there). {} lists them, {} installs them with Pour.",
+                    paint::path(&bp.to_string()),
+                    paint::number(bf.len()),
+                    paint::number(bc.len()),
+                    paint::cmd("pour list"),
+                    paint::cmd("pour migrate")
+                ));
+            }
         }
     }
     if problems == 0 {

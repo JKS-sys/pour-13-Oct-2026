@@ -131,15 +131,18 @@ Pour keeps as little as it can. Its own files: a 2.4–3.2 MB binary, a 2.3 MB l
 ## Use
 
 ```sh
-pour install ffmpeg wget            # formulae and their dependencies
-pour install --cask firefox         # macOS apps
-pour install peek keel              # the creator's apps (macOS, Windows, Linux, FreeBSD)
+pour install ffmpeg wget            # command-line tools: formulae and their dependencies
+pour install gh rclone yt-dlp       # on Windows and FreeBSD too: each tool's own build where no bottle exists
+pour install --cask firefox         # apps
+pour install --cask peek keel       # the creator's apps (macOS, Windows, Linux, FreeBSD)
 pour search image viewer            # names and descriptions, ranked
 pour info python                    # everything about a package (--json for scripts)
 pour upgrade                        # all outdated formulae and casks
 pour uninstall --zap firefox        # remove an app with its preferences and caches
 pour bundle                         # install from the Brewfile in this directory
-pour migrate                        # install everything Homebrew has on this machine
+pour list                           # Pour's packages, then what Homebrew installed here and how much of it Pour has
+pour migrate                        # install everything Homebrew has on this machine (brew need not be on PATH)
+pour register mytool --cli …        # register an app or a tool: checked automatically, listed at once
 pour list · outdated · leaves · deps ffmpeg --tree · uses openssl@3
 pour apps · register · link · unlink · pin · unpin · tap add · doctor · cleanup · env · self-update
 ```
@@ -164,11 +167,41 @@ Shell completions: `pour completions zsh > ~/.zfunc/_pour` (bash, fish, elvish a
   var/pour/index.pour             the index · taps/ extra registries
 ```
 
-Environment: `POUR_PREFIX` (13 characters or fewer on macOS), `POUR_CACHE`, `POUR_INDEX_URL`, `POUR_CA_BUNDLE`/`SSL_CERT_FILE` for TLS-inspecting proxies, `HTTPS_PROXY`, `POUR_SOUND=0` (no finishing chime: Pour plays the system's own Glass sound after it pours something in an interactive terminal, never in pipes, CI, `--quiet` or `--json`).
+Environment: `POUR_PREFIX` (13 characters or fewer on macOS), `POUR_CACHE`, `POUR_INDEX_URL`, `POUR_CA_BUNDLE`/`SSL_CERT_FILE` for TLS-inspecting proxies, `HTTPS_PROXY`, `POUR_SOUND=0`, `POUR_ANIMATIONS=0`, `NO_COLOR`, `FORCE_COLOR`.
+
+### Colour, motion and sound
+
+Every kind of thing has its own colour, so a glance tells them apart — and there is no pink or magenta anywhere (a test checks every hue stays outside 280–350°):
+
+| | colour | | colour |
+|---|---|---|---|
+| formulae | teal | apps (casks) | gold |
+| tools with their own builds | lime | versions and numbers | cyan |
+| old → new version | red → green | paths | sky |
+| links | blue | registries (taps) | violet |
+| Homebrew's packages | amber | section headings | a hue each, in order |
+| JSON keys · strings · numbers · true/false · null | blue · green · cyan · orange · red | brackets | by depth: gold, cyan, lime, violet, orange, sky |
+
+`--json` is coloured on a terminal and in CI logs, plain in pipes. A finished install plays a short pouring animation (a bottle tips, the glass fills); progress bars are gold on slate with green byte counts and sky speeds. Each command ends with its own system sound in an interactive terminal — install *Glass*, upgrade *Hero*, uninstall *Bottle*, update *Pop*, search *Tink* (quiet), cleanup *Purr*, register *Submarine*, an error *Basso* on macOS; matching freedesktop sounds on Linux and Windows' own sounds on Windows. Nothing plays in pipes, CI, `--quiet` or `--json`.
+
+In CI (GitHub Actions, GitLab, Buildkite, Azure Pipelines, CircleCI) Pour turns its colours on by itself; [pour-action](https://github.com/JKS-sys/pour-action-13-Oct-2026) adds a banner, one collapsible group per step, a timing for every package and a job summary with bars and a chart of where the time went. CI machines have no speakers, so the sounds stay on your desktop.
 
 ## Registries
 
-The [Pour registry](https://github.com/JKS-sys/pour-registry-13-Oct-2026) re-indexes Homebrew's formulae and casks every four hours from Homebrew's public API and logs what it registered and de-registered. [pour-apps](https://github.com/JKS-sys/pour-apps-13-Oct-2026) registers the creator's own applications with their live release feeds. Any JSON file in Homebrew's API shape is a registry: `pour tap add you/apps https://example.com/index.json`.
+The [Pour registry](https://github.com/JKS-sys/pour-registry-13-Oct-2026) re-indexes Homebrew's formulae and casks every four hours from Homebrew's public API and logs what it registered and de-registered. [pour-apps](https://github.com/JKS-sys/pour-apps-13-Oct-2026) registers the creator's own applications with their live release feeds, and **pour-tools** — 125 command-line tools (gh, rclone, yt-dlp, ffmpeg, git, cmake, ninja, caddy, cloudflared, ripgrep, uv, deno, bun…) with their own builds for macOS, Linux (x86_64, arm64, i686), Windows (x86_64, arm64) and FreeBSD, about 800 downloads in all, each with its SHA-256. A tool is listed only when it qualifies — a stable release, a licence, a checksum for every download, at least two systems — and the list is rebuilt every six hours. Their names are Homebrew's names, so `pour install gh` is the same command everywhere: Homebrew's bottle where one exists, the tool's own build where not. Any JSON file in Homebrew's API shape is a registry: `pour tap add you/apps https://example.com/index.json`.
+
+### Register your own app or tool
+
+```sh
+pour register fancy --desc "A fancy app for fancy people" --homepage https://fancy.example \
+     --feed https://fancy.example/latest.json                       # an app: pour install --cask fancy
+pour register tl --cli --desc "Does one useful thing very fast" --homepage https://tl.example \
+     --version 2.0.1 --bin tl \
+     --url linux-x86_64=https://tl.example/tl-linux.tar.gz#<sha256> \
+     --url windows-x86_64=https://tl.example/tl-win.zip#<sha256>     # a tool: pour install tl
+```
+
+No one approves anything by hand. The registry checks it on the spot — an id nobody else has (not a Homebrew formula or cask, not an existing app or tool), a one-line description, an https page that answers, downloads that answer with a real file under 2 GB and carry their SHA-256 (or come from a release feed), plain program names — and lists it within a minute when it qualifies, or answers with every reason it does not. The first registration prints a key; it is needed to update the entry later. The same JSON can be POSTed to `https://ipconfig.co.network/pour/api/register`; `/pour/api/registrations` lists everything registered. Apps made with the ship stack register themselves at every release, and an app that pings the dashboard for the first time is listed as soon as its release feed answers.
 
 ## Repositories
 
@@ -184,7 +217,7 @@ The [Pour registry](https://github.com/JKS-sys/pour-registry-13-Oct-2026) re-ind
 ## Build and release
 
 ```sh
-cargo test                      # 46 unit tests + the CLI
+cargo test                      # 54 unit tests + the CLI
 cargo build --release -p pour   # target/release/pour
 bash update.sh                  # the one script: tests, every platform (zig cross-builds), release,
                                 # R2 mirror, registry sync, apps, site deploy, repo details
@@ -194,17 +227,17 @@ bash update.sh                  # the one script: tests, every platform (zig cro
 
 ## Pour and Homebrew
 
-Pour is a client for the Homebrew ecosystem. It installs the bottles Homebrew's build farm compiles, tests and publishes, and reads Homebrew's public JSON API to know about them. It does not build from source and it never writes to `/opt/homebrew`; both can live on one machine, and `pour migrate` copies Homebrew's packages over. Pour is not affiliated with Homebrew.
+Pour is a client for the Homebrew ecosystem. It installs the bottles Homebrew's build farm compiles, tests and publishes, and reads Homebrew's public JSON API to know about them. It does not build from source and it never writes to `/opt/homebrew`; both can live on one machine. `pour list` shows what Homebrew installed (read from its Cellar and Caskroom) with how much of it Pour has, and `pour migrate` installs it with Pour. Pour is not affiliated with Homebrew.
 
 ## The apps, and new ones
 
 ```sh
-pour apps                         # every app made at ipconfig.co.network — new ones the dashboard adds, too
+pour apps                         # every app made at ipconfig.co.network — new ones, too
 pour install --cask hone          # any of them, from its live release feed
-pour register tilt --name Tilt --version 0.1.0   # introduce a new app to the dashboard
+pour register tilt --feed https://ipconfig.co.network/updates/tilt/latest.json --desc "…" --homepage …
 ```
 
-A registered app waits on the dashboard until the owner switches it on; from then on it is in `/pour/apps/index.json`, so `pour update && pour install --cask <app>` works on every computer.
+A new app is listed by itself: when it registers (at release, from the ship stack's `update.sh`), or when it pings the dashboard for the first time and its release feed answers with a version and a download. Then `pour update && pour install --cask <app>` works on every computer.
 
 <!-- licence -->
 ## Licence

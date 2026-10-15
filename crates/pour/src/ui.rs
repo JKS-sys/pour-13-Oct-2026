@@ -1,5 +1,6 @@
 //! Terminal output: colours, progress bars and the event reporter.
 
+use crate::paint::{self, Hue};
 use console::{style, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use pour_core::install::{Event, Reporter};
@@ -19,10 +20,25 @@ pub struct Ui {
     phase_started: Mutex<Option<std::time::Instant>>,
     /// Something was poured (installed, upgraded) — the finishing chime plays once.
     poured: AtomicBool,
+    /// The sound this command ends with when it succeeds (set by the command).
+    cue: Mutex<Option<Cue>>,
 }
 
-pub fn arrow() -> console::StyledObject<&'static str> {
-    style("==>").blue().bold()
+/// What a command did, for its closing sound. Each has its own sound on macOS,
+/// Windows and Linux desktops; nothing plays in pipes, CI, --quiet or --json.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cue {
+    Poured,
+    Upgraded,
+    Removed,
+    Updated,
+    Found,
+    Cleaned,
+    Registered,
+}
+
+pub fn arrow() -> String {
+    paint::b(Hue::Sky, "==>")
 }
 
 impl Ui {
@@ -40,6 +56,7 @@ impl Ui {
             total: Mutex::new(None),
             phase_started: Mutex::new(None),
             poured: AtomicBool::new(false),
+            cue: Mutex::new(None),
         }
     }
 
@@ -54,25 +71,62 @@ impl Ui {
         self.println(format!("{} {}", arrow(), style(s.as_ref()).bold()));
     }
 
+    /// A heading in the i-th section colour.
+    pub fn section(&self, s: impl AsRef<str>, i: usize) {
+        self.println(paint::heading(s.as_ref(), i));
+    }
+
+    /// Choose the closing sound for a successful command.
+    pub fn cue(&self, c: Cue) {
+        *self.cue.lock().unwrap() = Some(c);
+    }
+
+    /// A short pouring animation on a terminal (≈0.4 s): a bottle tips, the glass
+    /// fills in gold, then the line settles into `done`. Plain line elsewhere.
+    pub fn pour_animation(&self, done: impl AsRef<str>) {
+        if self.quiet || self.json {
+            return;
+        }
+        let interactive = Term::stdout().is_term() && std::env::var_os("CI").is_none();
+        if interactive && !reduced_motion() {
+            use std::io::Write;
+            let frames = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+            for (i, f) in frames.iter().enumerate() {
+                let stream = paint::c(Hue::Amber, "╲".repeat(1 + i % 3));
+                let glass = paint::b(paint::DEPTH[i % paint::DEPTH.len()], *f);
+                self.multi.suspend(|| {
+                    print!("\r  🍶 {stream:<3} {glass} ");
+                    let _ = std::io::stdout().flush();
+                });
+                std::thread::sleep(Duration::from_millis(45));
+            }
+            self.multi.suspend(|| {
+                print!("\r\x1b[2K");
+                let _ = std::io::stdout().flush();
+            });
+        }
+        self.println(format!("{} {}", paint::b(Hue::Gold, "🥂"), done.as_ref()));
+    }
+
     pub fn warn(&self, s: impl AsRef<str>) {
         if self.json {
             return;
         }
         self.multi
-            .suspend(|| eprintln!("{} {}", style("Warning:").yellow().bold(), s.as_ref()));
+            .suspend(|| eprintln!("{} {}", paint::b(Hue::Amber, "Warning:"), s.as_ref()));
     }
 
     pub fn error(&self, s: impl AsRef<str>) {
         self.multi
-            .suspend(|| eprintln!("{} {}", style("Error:").red().bold(), s.as_ref()));
+            .suspend(|| eprintln!("{} {}", paint::b(Hue::Red, "Error:"), s.as_ref()));
     }
 
     pub fn note(&self, s: impl AsRef<str>) {
-        self.println(format!("  {} {}", style("•").dim(), s.as_ref()));
+        self.println(format!("  {} {}", paint::c(Hue::Violet, "•"), s.as_ref()));
     }
 
     pub fn ok(&self, s: impl AsRef<str>) {
-        self.println(format!("{} {}", style("✓").green().bold(), s.as_ref()));
+        self.println(format!("{} {}", paint::b(Hue::Green, "✓"), s.as_ref()));
     }
 
     pub fn finish(&self) {
@@ -84,13 +138,48 @@ impl Ui {
     /// The pour sound when a command poured something, the low one when it failed.
     /// Interactive terminals only (never in pipes, CI, --quiet or --json); POUR_SOUND=0 turns it off.
     pub fn chime_end(&self, ok: bool) {
-        if ok && !self.poured.load(Ordering::Relaxed) {
+        let cue = *self.cue.lock().unwrap();
+        let cue = if self.poured.load(Ordering::Relaxed) {
+            cue.or(Some(Cue::Poured))
+        } else {
+            cue
+        };
+        if ok && cue.is_none() {
             return;
         }
         if self.quiet || self.json || !Term::stderr().is_term() || !sound_on() {
             return;
         }
-        chime(ok);
+        chime(if ok { cue } else { None });
+    }
+}
+
+/// Reduced motion: POUR_ANIMATIONS=0 (or off), or the accessibility setting
+/// exported by some terminals (REDUCE_MOTION=1).
+fn reduced_motion() -> bool {
+    let off = |k: &str| {
+        matches!(
+            std::env::var(k)
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "0" | "off" | "false" | "no"
+        )
+    };
+    off("POUR_ANIMATIONS") || std::env::var("REDUCE_MOTION").is_ok_and(|v| v == "1")
+}
+
+/// The system sound for each cue: (macOS, freedesktop name, Windows media file).
+fn sound_for(c: Option<Cue>) -> (&'static str, &'static str, &'static str) {
+    match c {
+        Some(Cue::Poured) => ("Glass", "complete", "Windows Notify System Generic"),
+        Some(Cue::Upgraded) => ("Hero", "service-login", "Windows Unlock"),
+        Some(Cue::Removed) => ("Bottle", "trash-empty", "Windows Recycle"),
+        Some(Cue::Updated) => ("Pop", "message-new-instant", "Windows Notify Messaging"),
+        Some(Cue::Found) => ("Tink", "bell", "Windows Ding"),
+        Some(Cue::Cleaned) => ("Purr", "trash-empty", "Windows Recycle"),
+        Some(Cue::Registered) => ("Submarine", "dialog-information", "Windows Notify Calendar"),
+        None => ("Basso", "dialog-error", "Windows Critical Stop"),
     }
 }
 
@@ -108,8 +197,10 @@ fn sound_on() -> bool {
 }
 
 /// Play the system's own sound without waiting for it (the player outlives pour).
-fn chime(ok: bool) {
+fn chime(cue: Option<Cue>) {
     use std::process::{Command, Stdio};
+    let (mac, fd, win) = sound_for(cue);
+    let soft = matches!(cue, Some(Cue::Found));
     let spawn = |prog: &str, args: &[&str]| {
         Command::new(prog)
             .args(args)
@@ -120,21 +211,14 @@ fn chime(ok: bool) {
             .is_ok()
     };
     if cfg!(target_os = "macos") {
-        let f = if ok {
-            "/System/Library/Sounds/Glass.aiff"
-        } else {
-            "/System/Library/Sounds/Basso.aiff"
-        };
-        if std::path::Path::new(f).exists() && spawn("afplay", &["-v", "0.6", f]) {
+        let f = format!("/System/Library/Sounds/{mac}.aiff");
+        let vol = if soft { "0.3" } else { "0.6" };
+        if std::path::Path::new(&f).exists() && spawn("afplay", &["-v", vol, &f]) {
             return;
         }
     } else if cfg!(target_os = "windows") {
-        let f = if ok {
-            r"C:\Windows\Media\Windows Notify System Generic.wav"
-        } else {
-            r"C:\Windows\Media\Windows Critical Stop.wav"
-        };
-        if std::path::Path::new(f).exists() {
+        let f = format!(r"C:\Windows\Media\{win}.wav");
+        if std::path::Path::new(&f).exists() {
             let ps = format!("(New-Object Media.SoundPlayer '{f}').PlaySync()");
             if spawn(
                 "powershell",
@@ -144,22 +228,18 @@ fn chime(ok: bool) {
             }
         }
     } else {
-        let f = if ok {
-            "/usr/share/sounds/freedesktop/stereo/complete.oga"
-        } else {
-            "/usr/share/sounds/freedesktop/stereo/dialog-error.oga"
-        };
-        if std::path::Path::new(f).exists() && (spawn("paplay", &[f]) || spawn("pw-play", &[f])) {
+        let f = format!("/usr/share/sounds/freedesktop/stereo/{fd}.oga");
+        if std::path::Path::new(&f).exists() && (spawn("paplay", &[&f]) || spawn("pw-play", &[&f]))
+        {
             return;
         }
-        if spawn(
-            "canberra-gtk-play",
-            &["-i", if ok { "complete" } else { "dialog-error" }],
-        ) {
+        if spawn("canberra-gtk-play", &["-i", fd]) {
             return;
         }
     }
-    eprint!("\x07");
+    if !soft {
+        eprint!("\x07");
+    }
 }
 
 impl Progress for Ui {
@@ -171,7 +251,7 @@ impl Progress for Ui {
             Some(t) => {
                 let b = self.multi.add(ProgressBar::new(t));
                 b.set_style(
-                    ProgressStyle::with_template("  {prefix:<24.cyan} {bar:28.yellow/dim} {bytes:>9.green} / {total_bytes:<9} {bytes_per_sec:>11.blue}")
+                    ProgressStyle::with_template("  {prefix:<24.43.bold} {bar:28.179/238} {bytes:>9.78} / {total_bytes:<9.247} {bytes_per_sec:>11.39} {eta:>4.141}")
                         .unwrap()
                         .progress_chars("█▓░"),
                 );
@@ -181,7 +261,7 @@ impl Progress for Ui {
                 let b = self.multi.add(ProgressBar::new_spinner());
                 b.set_style(
                     ProgressStyle::with_template(
-                        "  {prefix:<24.cyan} {spinner:.yellow} {bytes:>9.green}",
+                        "  {prefix:<24.43.bold} {spinner:.179} {bytes:>9.78}",
                     )
                     .unwrap()
                     // a glass filling up, then poured out again
@@ -207,8 +287,13 @@ impl Progress for Ui {
         if let Some(b) = self.bars.lock().unwrap().remove(label) {
             b.finish_and_clear();
             if !self.quiet && !self.json {
-                self.multi
-                    .suspend(|| println!("  {} {}", style("↓").green(), style(label).dim()));
+                self.multi.suspend(|| {
+                    println!(
+                        "  {} {}",
+                        paint::b(Hue::Green, "↓"),
+                        paint::c(Hue::Teal, label)
+                    )
+                });
             }
         }
     }
@@ -254,13 +339,19 @@ impl Reporter for Ui {
                     pour_core::resolve::Action::Upgrade => "upgraded",
                     pour_core::resolve::Action::Keep => "kept",
                 };
+                let verb_hue = match action {
+                    pour_core::resolve::Action::Install => Hue::Green,
+                    pour_core::resolve::Action::Reinstall => Hue::Sky,
+                    pour_core::resolve::Action::Upgrade => Hue::Lime,
+                    pour_core::resolve::Action::Keep => Hue::Slate,
+                };
                 self.println(format!(
                     "  {} {} {} {} {}",
-                    style("🍶").yellow(),
-                    style(&name).bold(),
-                    style(&version).dim(),
-                    style(verb).green(),
-                    style(format!("{ms} ms")).dim()
+                    "🍶",
+                    paint::formula(&name),
+                    paint::version(&version),
+                    paint::b(verb_hue, verb),
+                    paint::c(Hue::Indigo, format!("{ms} ms"))
                 ));
             }
         }
