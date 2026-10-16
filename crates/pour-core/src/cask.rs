@@ -47,6 +47,9 @@ pub struct CaskOptions {
     pub skip_quarantine_clear: bool,
     pub appdir: Option<PathBuf>,
     pub dry_run: bool,
+    /// The app is already in Applications (put there by Homebrew, the App Store or
+    /// by hand): take it over instead of downloading it again (`--adopt`).
+    pub adopt: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -61,6 +64,8 @@ pub struct CaskSummary {
     /// Formulae the cask depends on; the caller installs them first.
     pub needs_formulae: Vec<String>,
     pub needs_casks: Vec<String>,
+    /// Taken over from what was already installed, nothing downloaded.
+    pub adopted: bool,
 }
 
 pub struct CaskEngine<'a> {
@@ -376,6 +381,47 @@ fn container_for(url: &str, hint: Option<&str>, kind: Option<&str>) -> Container
     }
 }
 
+/// Where a cask's `app` artifacts live once placed (honouring `target`).
+pub fn app_destinations(artifacts_json: &str, appdir: &Path) -> Vec<PathBuf> {
+    let arts: Vec<Value> = serde_json::from_str(artifacts_json).unwrap_or_default();
+    let mut out = Vec::new();
+    for a in &arts {
+        let Some(list) = a.get("app").and_then(|x| x.as_array()) else {
+            continue;
+        };
+        let target = a.get("target").and_then(|t| t.as_str()).map(expand_home);
+        for name in list.iter().filter_map(|v| v.as_str()) {
+            let base = name.rsplit('/').next().unwrap_or(name);
+            out.push(match &target {
+                Some(t) if list.len() == 1 => PathBuf::from(t),
+                _ => appdir.join(base),
+            });
+        }
+    }
+    out
+}
+
+/// CFBundleShortVersionString of an app bundle, read from its Info.plist.
+fn bundle_version(app: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(app.join("Contents/Info.plist"))
+        .ok()
+        .or_else(|| {
+            // binary plists: let plutil turn it into XML
+            Command::new("/usr/bin/plutil")
+                .args(["-convert", "xml1", "-o", "-"])
+                .arg(app.join("Contents/Info.plist"))
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+        })?;
+    let i = text.find("<key>CFBundleShortVersionString</key>")?;
+    let rest = &text[i..];
+    let a = rest.find("<string>")? + 8;
+    let b = rest[a..].find("</string>")? + a;
+    let v = rest[a..b].trim();
+    (!v.is_empty() && v.len() < 64 && !v.contains(['/', '\\'])).then(|| v.to_string())
+}
+
 /// The programs a Pour-native cask puts on PATH: the basenames of its `binary`
 /// artifacts, else its token. Lowercase, without `.exe`.
 pub fn program_names(cask: &Cask) -> Vec<String> {
@@ -570,6 +616,52 @@ impl CaskEngine<'_> {
             let _ = store::remove_tree(&existing.path);
         }
 
+        // Adopt: every app the cask places is already where it belongs.
+        if opts.adopt && self.platform.os == Os::MacOs {
+            let arts_json = art_override
+                .clone()
+                .unwrap_or_else(|| cask.artifacts.clone());
+            let apps = app_destinations(&arts_json, &self.appdir(opts));
+            if !apps.is_empty() && apps.iter().all(|a| a.exists()) {
+                let found = bundle_version(&apps[0]).unwrap_or_else(|| version.clone());
+                let room = self.paths.caskroom().join(&cask.token).join(&found);
+                std::fs::create_dir_all(&room)?;
+                summary.version = found.clone();
+                summary.adopted = true;
+                summary.artifacts = apps.iter().map(|a| a.display().to_string()).collect();
+                let rcpt = Receipt {
+                    kind: Kind::Cask,
+                    name: cask.token.clone(),
+                    version: found,
+                    tap: source.to_string(),
+                    desc: cask.desc.clone(),
+                    homepage: cask.homepage.clone(),
+                    sha256: None,
+                    tag: self.platform.native_tag(),
+                    cellar: None,
+                    installed_at: receipt::now(),
+                    installed_on_request: true,
+                    installed_as_dependency: false,
+                    runtime_deps: Vec::new(),
+                    keg_only: false,
+                    links: Vec::new(),
+                    artifacts: summary.artifacts.clone(),
+                    relocated_files: 0,
+                    deep_relocation: false,
+                    pour_version: env!("CARGO_PKG_VERSION").into(),
+                    platform: self.platform.native_tag(),
+                    pinned: false,
+                    native_kind: Some("adopted".into()),
+                    links_len: 0,
+                };
+                rcpt.write(&room)?;
+                let _ = std::fs::write(room.join("cask.json"), serde_json::to_vec_pretty(&serde_json::json!({"token": cask.token, "artifacts": serde_json::from_str::<Value>(&arts_json).unwrap_or(Value::Null), "adopted": true})).unwrap_or_default());
+                receipt::invalidate(self.paths);
+                summary.ms = started.elapsed().as_millis();
+                return Ok(summary);
+            }
+        }
+
         // Download.
         self.reporter.event(Event::Phase(format!(
             "Downloading {} {}",
@@ -683,6 +775,11 @@ impl CaskEngine<'_> {
             links_len: 0,
         };
         rcpt.write(&room)?;
+        // The download has done its job (the app or program is in place): drop it, as the
+        // bottles are dropped, unless POUR_KEEP_DOWNLOADS asks to keep it.
+        if std::env::var_os("POUR_KEEP_DOWNLOADS").is_none() {
+            let _ = std::fs::remove_file(&file);
+        }
         // Keep the cask definition for uninstall (artifacts, zap).
         let _ = std::fs::write(room.join("cask.json"), serde_json::to_vec_pretty(&serde_json::json!({"token": cask.token, "artifacts": serde_json::from_str::<Value>(&artifacts_json).unwrap_or(Value::Null)})).unwrap_or_default());
         summary.caveats = cask.caveats.clone();
@@ -1615,6 +1712,29 @@ pub fn which(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopt_finds_apps_where_the_cask_puts_them() {
+        let arts = r#"[{"app": ["Google Chrome.app"], "target": "/Applications/Google Chrome.app"}, {"zap": []}]"#;
+        assert_eq!(
+            app_destinations(arts, Path::new("/Applications")),
+            vec![PathBuf::from("/Applications/Google Chrome.app")]
+        );
+        let two = r#"[{"app": ["A.app", "sub/B.app"]}]"#;
+        assert_eq!(
+            app_destinations(two, Path::new("/Apps")),
+            vec![PathBuf::from("/Apps/A.app"), PathBuf::from("/Apps/B.app")]
+        );
+        let d = std::env::temp_dir().join(format!("pour-adopt-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("X.app/Contents")).unwrap();
+        std::fs::write(
+            d.join("X.app/Contents/Info.plist"),
+            "<dict><key>CFBundleShortVersionString</key>\n<string>3.6.7</string></dict>",
+        )
+        .unwrap();
+        assert_eq!(bundle_version(&d.join("X.app")).as_deref(), Some("3.6.7"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn container_detection() {

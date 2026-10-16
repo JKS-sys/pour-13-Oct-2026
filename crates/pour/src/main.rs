@@ -8,7 +8,25 @@ mod ui;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::process::ExitCode;
 
+/// Help in Pour's colours (no pink): headings gold, usage teal, commands and flags sky,
+/// placeholders lime, errors red, suggestions green.
+const STYLES: clap::builder::styling::Styles = {
+    use clap::builder::styling::{Ansi256Color, Color, Style, Styles};
+    const fn c(n: u8) -> Option<Color> {
+        Some(Color::Ansi256(Ansi256Color(n)))
+    }
+    Styles::styled()
+        .header(Style::new().bold().fg_color(c(179)))
+        .usage(Style::new().bold().fg_color(c(43)))
+        .literal(Style::new().bold().fg_color(c(39)))
+        .placeholder(Style::new().fg_color(c(149)))
+        .error(Style::new().bold().fg_color(c(203)))
+        .valid(Style::new().bold().fg_color(c(78)))
+        .invalid(Style::new().bold().fg_color(c(214)))
+};
+
 #[derive(Parser)]
+#[command(styles = STYLES)]
 #[command(name = "pour", version, about = "Pour — the Homebrew-compatible package manager that installs in milliseconds", long_about = None, disable_help_subcommand = true, arg_required_else_help = true)]
 #[command(
     after_help = "Examples:\n  pour install ffmpeg wget          pour two formulae (and what they need)\n  pour install --cask firefox       install an app\n  pour search json                  find packages\n  pour upgrade                      upgrade everything that is outdated\n  pour bundle                       install from a Brewfile\n\nBy Jagadeesh Kumar S · https://ipconfig.co.network/pour"
@@ -68,6 +86,10 @@ pub enum Command {
         /// Replace an app that is already present (casks)
         #[arg(long, short)]
         force: bool,
+        /// Take over an app that is already in Applications (put there by Homebrew, the
+        /// App Store or by hand) instead of downloading it again (casks)
+        #[arg(long)]
+        adopt: bool,
         /// Parallel downloads
         #[arg(short = 'j', long, default_value_t = 16)]
         jobs: usize,
@@ -150,6 +172,12 @@ pub enum Command {
         /// Show versions
         #[arg(long, short = 'l')]
         versions: bool,
+        /// One name per line, nothing else (what scripts read; also the default in pipes)
+        #[arg(short = '1', long = "one")]
+        one: bool,
+        /// Also list what Homebrew installed on this machine (shown on a terminal by default)
+        #[arg(long)]
+        homebrew: bool,
     },
     /// Symlink an installed formula into the prefix
     Link {

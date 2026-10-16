@@ -25,6 +25,8 @@ struct Ctx<'a> {
     ui: &'a Ui,
     paths: Paths,
     platform: Platform,
+    /// `--adopt`: take over apps already in Applications instead of downloading them.
+    adopt: std::cell::Cell<bool>,
 }
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error> {
@@ -112,12 +114,23 @@ impl Ctx<'_> {
         let mut casks = Vec::new();
         for n in names {
             match reg.find(n, kind) {
-                Some((src, Pkg::Cask(c))) => casks.push((src, c)),
+                Some((src, Pkg::Cask(c))) => {
+                    // A Homebrew cask is a macOS app; on Windows/Linux/FreeBSD the app's own
+                    // installer from pour-desktop stands in under the same name.
+                    let here = self.platform.os == Os::MacOs
+                        || !c.native.is_empty()
+                        || c.livecheck_url.is_some();
+                    match (here, reg.native_alternative(&c.token, &self.platform)) {
+                        (false, Some(alt)) => casks.push(alt),
+                        _ => casks.push((src, c)),
+                    }
+                }
                 Some((_, Pkg::Formula(f))) => {
                     // No bottle for this system (Windows, FreeBSD, an old Mac)? A tool's own
                     // build from pour-tools stands in, under the same name.
+                    // A disabled formula (node@18) is the same story: its own build stands in.
                     let tags = self.platform.bottle_tags();
-                    let bottled = f.bottles.iter().any(|b| tags.contains(&b.tag));
+                    let bottled = f.bottles.iter().any(|b| tags.contains(&b.tag)) && !f.disabled;
                     match (bottled, reg.native_alternative(&f.name, &self.platform)) {
                         (false, Some((src, c))) => casks.push((src, c)),
                         _ => formulae.push(f.name.clone()),
@@ -197,6 +210,7 @@ impl Ctx<'_> {
             let opts = CaskOptions {
                 force,
                 dry_run: true,
+                adopt: self.adopt.get(),
                 ..Default::default()
             };
             let probe = eng.install(c, src, &opts)?;
@@ -246,6 +260,7 @@ impl Ctx<'_> {
             let opts = CaskOptions {
                 force,
                 dry_run: false,
+                adopt: self.adopt.get(),
                 ..Default::default()
             };
             let s = eng.install(c, src, &opts)?;
@@ -265,6 +280,16 @@ impl Ctx<'_> {
                 })
                 .join(", ");
             self.ui.cue(crate::ui::Cue::Poured);
+            if s.adopted {
+                self.ui.ok(format!(
+                    "{} {} {} {}",
+                    paint::cask(&c.token),
+                    paint::version(&s.version),
+                    paint::b(Hue::Teal, "adopted"),
+                    paint::dim("(already in Applications — nothing downloaded)")
+                ));
+                continue;
+            }
             let cli_tool = c.tap == "jks-sys/pour-tools";
             self.ui.pour_animation(format!(
                 "{} {} {} {}",
@@ -307,6 +332,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
         ui,
         paths,
         platform,
+        adopt: std::cell::Cell::new(false),
     };
 
     if let Some(p) = &cli.prefix {
@@ -334,6 +360,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
     match command {
         Command::Install {
             kind,
+            adopt,
             reinstall,
             only_dependencies,
             skip_post_install,
@@ -343,6 +370,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             dry_run,
             names,
         } => {
+            ctx.adopt.set(*adopt);
             let reg = ctx.registry()?;
             let (formulae, casks) = ctx.classify(&reg, names, ctx.kind(kind))?;
             if !formulae.is_empty() {
@@ -720,10 +748,43 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 paint::print_json(&serde_json::Value::Array(out));
             }
         }
-        Command::List { kind, versions } => {
+        Command::List {
+            kind,
+            versions,
+            one,
+            homebrew,
+        } => {
             let k = ctx.kind(kind);
             let formulae = receipt::installed_formulae(&ctx.paths);
             let casks = receipt::installed_casks(&ctx.paths);
+            // Scripts (and `pour list | grep`) get Homebrew's shape: one name per line,
+            // Pour's own packages only, no headings — `-1`, or whenever stdout is a pipe.
+            let piped = !console::Term::stdout().is_term();
+            if !cli.json && (*one || (piped && !*homebrew)) {
+                let mut names: Vec<String> = Vec::new();
+                if k != Some(Kind::Cask) {
+                    names.extend(formulae.iter().filter(|i| i.active || *versions).map(|i| {
+                        if *versions {
+                            format!("{} {}", i.receipt.name, i.receipt.version)
+                        } else {
+                            i.receipt.name.clone()
+                        }
+                    }));
+                }
+                if k != Some(Kind::Formula) {
+                    names.extend(casks.iter().map(|i| {
+                        if *versions {
+                            format!("{} {}", i.receipt.name, i.receipt.version)
+                        } else {
+                            i.receipt.name.clone()
+                        }
+                    }));
+                }
+                for n in names {
+                    println!("{n}");
+                }
+                return Ok(());
+            }
             // What Homebrew installed on this machine, read from its Cellar and Caskroom,
             // so `pour list` shows everything — and which of it Pour can install too.
             let (bf, bc) = pour_core::homebrew::installed(&ctx.paths.prefix);
@@ -1350,7 +1411,9 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     _ => None,
                 })
                 .collect();
-            ctx.install_casks(&reg, &casks, true, *dry_run)?;
+            // the apps are in Applications already: take them over, download nothing
+            ctx.adopt.set(true);
+            ctx.install_casks(&reg, &casks, false, *dry_run)?;
             ui.note("Homebrew itself was left untouched; remove it whenever you are ready.");
         }
         Command::Init { dry_run } => init(&ctx, *dry_run)?,
@@ -1381,14 +1444,20 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     serde_json::json!({"version": env!("CARGO_PKG_VERSION"), "platform": ctx.platform.describe(), "bottle_tag": ctx.platform.native_tag(), "prefix": ctx.paths.prefix_str(), "index_generated_at": age, "formulae": nf, "casks": nc, "installed_formulae": receipt::installed_formulae(&ctx.paths).len(), "installed_casks": receipt::installed_casks(&ctx.paths).len()})
                 );
             } else {
-                println!("pour {}", env!("CARGO_PKG_VERSION"));
                 println!(
-                    "platform:   {} · bottles: {}",
+                    "{} {}",
+                    paint::b(Hue::Gold, "🍶 pour"),
+                    paint::version(env!("CARGO_PKG_VERSION"))
+                );
+                println!(
+                    "{}   {} · bottles: {}",
+                    paint::b(Hue::Sky, "platform:"),
                     ctx.platform.describe(),
                     ctx.platform.native_tag()
                 );
                 println!(
-                    "prefix:     {} ({})",
+                    "{}     {} ({})",
+                    paint::b(Hue::Teal, "prefix:"),
                     ctx.paths.prefix_str(),
                     if ctx.paths.writable() {
                         "writable"
@@ -1397,7 +1466,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     }
                 );
                 println!(
-                    "index:      {} formulae, {} casks{}",
+                    "{}      {} formulae, {} casks{}",
+                    paint::b(Hue::Lime, "index:"),
                     nf,
                     nc,
                     if age > 0 {
@@ -1407,7 +1477,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     }
                 );
                 println!(
-                    "installed:  {} formulae, {} casks",
+                    "{}  {} formulae, {} casks",
+                    paint::b(Hue::Green, "installed:"),
                     receipt::installed_formulae(&ctx.paths).len(),
                     receipt::installed_casks(&ctx.paths).len()
                 );
@@ -1431,7 +1502,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         .map(|m| m.len())
                         .unwrap_or(0);
                 println!(
-                    "store:      {} entries · {} (kegs are {} of it, so nothing is stored twice)",
+                    "{}      {} entries · {} (kegs are {} of it, so nothing is stored twice)",
+                    paint::b(Hue::Violet, "store:"),
                     entries.len(),
                     human_bytes(store_bytes),
                     if ctx.platform.os == Os::MacOs {
@@ -1441,7 +1513,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     }
                 );
                 println!(
-                    "pour's own: {} binary · {} index · {} download cache",
+                    "{} {} binary · {} index · {} download cache",
+                    paint::b(Hue::Gold, "pour's own:"),
                     human_bytes(
                         std::env::current_exe()
                             .and_then(std::fs::metadata)
@@ -1452,7 +1525,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     human_bytes(dl_bytes)
                 );
                 println!(
-                    "taps:       {}",
+                    "{}       {}",
+                    paint::b(Hue::Orange, "taps:"),
                     registry::taps(&ctx.paths)
                         .iter()
                         .map(|t| t.name.clone())

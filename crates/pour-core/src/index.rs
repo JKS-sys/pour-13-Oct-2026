@@ -285,6 +285,15 @@ impl Index {
     /// reached through an alias or old name.
     pub fn position(&self, kind: Kind, name: &str) -> Option<usize> {
         let q = name.to_ascii_lowercase();
+        // a full `tap/name` may itself be an alias (`minio/aistor/mc` → aistor-mc)
+        if q.contains('/') {
+            if let Some(a) = self.bsearch(kind, &q, true) {
+                let b = self.block(kind);
+                if let Ok(x) = u32_at(self.data.as_ref(), b.alias_idx + 4 * a) {
+                    return Some(x as usize);
+                }
+            }
+        }
         let q = q.rsplit('/').next().unwrap_or(&q); // accept tap/name
         if let Some(i) = self.bsearch(kind, q, false) {
             return Some(i);

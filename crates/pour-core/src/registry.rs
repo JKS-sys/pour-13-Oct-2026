@@ -29,6 +29,12 @@ pub const DEFAULT_TAPS: &[(&str, &str)] = &[
         "jks-sys/pour-tools",
         "https://ipconfig.co.network/pour/tools/index.json",
     ),
+    // Desktop apps' own installers for Windows, Linux and FreeBSD, named like Homebrew's
+    // casks: `pour install --cask obsidian` on every system.
+    (
+        "jks-sys/pour-desktop",
+        "https://ipconfig.co.network/pour/desktop/index.json",
+    ),
 ];
 pub const TAP_FALLBACKS: &[(&str, &str)] = &[
     (
@@ -38,6 +44,10 @@ pub const TAP_FALLBACKS: &[(&str, &str)] = &[
     (
         "jks-sys/pour-tools",
         "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/tools.index.json",
+    ),
+    (
+        "jks-sys/pour-desktop",
+        "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/desktop.index.json",
     ),
 ];
 
@@ -279,7 +289,24 @@ impl Registry {
     /// `name`, `tap/name` or `user/repo/name`; formula before cask unless a
     /// kind is forced.
     pub fn find(&self, spec: &str, kind: Option<Kind>) -> Option<(String, Pkg)> {
-        self.find_in(spec, kind, true)
+        self.find_in(spec, kind, true).or_else(|| {
+            // `minio/aistor/mc`: a Homebrew tap Pour does not follow. A Pour registry may
+            // carry the same program and list the full name as an alias (old_tokens).
+            let (tap, _) = split_spec(spec);
+            let known =
+                tap.is_some_and(|t| self.sources.iter().any(|s| source_matches(&s.name, t)));
+            if tap.is_some() && !known {
+                self.sources.iter().skip(1).find_map(|s| {
+                    let hit = match kind {
+                        Some(k) => s.index.find(k, spec),
+                        None => s.index.find_any(spec),
+                    };
+                    hit.map(|p| (s.name.clone(), p))
+                })
+            } else {
+                None
+            }
+        })
     }
 
     fn find_in(&self, spec: &str, kind: Option<Kind>, full: bool) -> Option<(String, Pkg)> {
@@ -724,7 +751,14 @@ mod tests {
         )
         .unwrap();
         let names: Vec<String> = taps(&paths).into_iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["jks-sys/pour-apps", "jks-sys/pour-tools"]);
+        assert_eq!(
+            names,
+            vec![
+                "jks-sys/pour-apps",
+                "jks-sys/pour-tools",
+                "jks-sys/pour-desktop"
+            ]
+        );
         assert!(remove_tap(&paths, "jks-sys/pour-tools").unwrap());
         assert!(!taps(&paths).iter().any(|t| t.name == "jks-sys/pour-tools"));
         assert!(!remove_tap(&paths, "jks-sys/pour-tools").unwrap());
