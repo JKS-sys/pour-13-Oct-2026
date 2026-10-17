@@ -252,3 +252,7 @@ Copyright © 2026 **Jagadeesh Kumar S**. All rights reserved. Pour is source-ava
 ## The creator
 
 **Jagadeesh Kumar S** is a creator in Velachery, Chennai — nine years of full-stack work (React, Node.js, MongoDB), 4K video, YouTube thumbnails and a shelf of desktop apps, with a news show, [NewsCraft World Report](https://www.youtube.com/@JKS-sys), on the side. [About](https://ipconfig.co.network/about) · [Sponsor](https://ipconfig.co.network/sponsor) · JKS.sys@icloud.com
+
+---
+
+> **If Pour helps you, please ⭐ star this repository — it helps other people find it.**
