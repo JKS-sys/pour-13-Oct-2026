@@ -2,7 +2,7 @@
 
 use crate::paint::{self, Hue};
 use crate::ui::{arrow, human_bytes, human_ms, Ui};
-use crate::{BundleAction, Cli, Command, KindFlags, RegistryAction, TapAction};
+use crate::{BundleAction, Cli, Command, KindFlags, RegistryAction, ServicesAction, TapAction};
 use pour_core::cask::{CaskEngine, CaskOptions};
 use pour_core::install::{Engine, Options};
 use pour_core::model::{Kind, Pkg};
@@ -27,6 +27,11 @@ struct Ctx<'a> {
     platform: Platform,
     /// `--adopt`: take over apps already in Applications instead of downloading them.
     adopt: std::cell::Cell<bool>,
+}
+
+/// Registries of command-line programs (installed with `pour install NAME`, no --cask).
+fn is_tool_tap(t: &str) -> bool {
+    matches!(t, "jks-sys/pour-tools" | "jks-sys/pour-windows")
 }
 
 fn err(msg: impl Into<String>) -> Box<dyn std::error::Error> {
@@ -74,7 +79,10 @@ impl Ctx<'_> {
 
     fn update(&self, force: bool) -> Result<()> {
         let t = std::time::Instant::now();
+        self.ui
+            .spin_start("fetching the index of every formula, cask, tool and app");
         let rep = registry::update(&self.paths, force);
+        self.ui.spin_stop();
         let show = |name: &str, st: &registry::Status| match st {
             registry::Status::Updated { formulae, casks } => self.ui.ok(format!(
                 "{}: {} formulae, {} casks",
@@ -290,7 +298,7 @@ impl Ctx<'_> {
                 ));
                 continue;
             }
-            let cli_tool = c.tap == "jks-sys/pour-tools";
+            let cli_tool = is_tool_tap(&c.tap);
             self.ui.pour_animation(format!(
                 "{} {} {} {}",
                 if cli_tool {
@@ -426,6 +434,18 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 }
             }
             if !formulae.is_empty() {
+                // a formula running as a service is stopped first (and not started at login again)
+                let svc = pour_core::services::Services {
+                    paths: &ctx.paths,
+                    platform: &ctx.platform,
+                };
+                for f in &formulae {
+                    let st = svc.status(f);
+                    if st.enabled || st.state == "started" {
+                        let _ = svc.stop(f);
+                        ui.note(format!("stopped the {} service", paint::formula(f)));
+                    }
+                }
                 let removed = ctx.engine().uninstall(&formulae, *ignore_dependencies)?;
                 for r in removed {
                     ui.ok(format!(
@@ -661,7 +681,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     .collect();
             // formulae first, then casks — each group keeps its ranking
             let mut ordered: Vec<&(String, pour_core::index::Hit)> = Vec::with_capacity(hits.len());
-            let is_tool = |src: &str| src == "jks-sys/pour-tools";
+            let is_tool = |src: &str| is_tool_tap(src);
             ordered.extend(hits.iter().filter(|(_, h)| h.kind == Kind::Formula));
             ordered.extend(
                 hits.iter()
@@ -713,7 +733,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 } else {
                     format!(": {}", h.desc)
                 };
-                let name = if src == "jks-sys/pour-tools" {
+                let name = if is_tool_tap(src) {
                     paint::tool(&h.name)
                 } else if h.kind == Kind::Formula {
                     paint::formula(&h.name)
@@ -834,9 +854,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         .collect::<Vec<_>>(),
                 );
             }
-            let (tools, apps): (Vec<_>, Vec<_>) = casks
-                .iter()
-                .partition(|i| i.receipt.tap == "jks-sys/pour-tools");
+            let (tools, apps): (Vec<_>, Vec<_>) =
+                casks.iter().partition(|i| is_tool_tap(&i.receipt.tap));
             if k != Some(Kind::Formula) && !tools.is_empty() {
                 ui.section(format!("Tools ({})", tools.len()), 3);
                 section += 1;
@@ -1219,6 +1238,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 paint::cmd("pour update")
             ));
         }
+        Command::Services { action } => services_cmd(&ctx, cli, action.as_ref())?,
         Command::Doctor => doctor(&ctx)?,
         Command::Cleanup { dry_run } => {
             if *dry_run {
@@ -1755,14 +1775,84 @@ fn print_summary(ctx: &Ctx, s: &pour_core::install::Summary) {
         );
         ctx.ui.pour_animation(line);
     }
+    // a framed card: what was poured, with versions
+    if s.installed.len() > 1 && console::Term::stdout().is_term() {
+        let lines: Vec<String> = s
+            .installed
+            .iter()
+            .enumerate()
+            .map(|(i, (n, v, a))| {
+                format!(
+                    "{} {} {} {}",
+                    paint::b(paint::DEPTH[i % paint::DEPTH.len()], "◆"),
+                    paint::formula(n),
+                    paint::version(v),
+                    paint::dim(a)
+                )
+            })
+            .collect();
+        ctx.ui.card("poured", &lines);
+    }
+    // One caveats block per package, with Homebrew's placeholders made real and
+    // `brew` commands spoken as Pour's.
+    let prefix = ctx.paths.prefix_str();
+    let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
     for (name, text) in &s.caveats {
+        let t = caveat_text(text, &prefix);
+        match grouped.iter_mut().find(|(n, _)| n == name) {
+            Some((_, v)) => v.push(t),
+            None => grouped.push((name.clone(), vec![t])),
+        }
+    }
+    for (name, texts) in grouped {
         ctx.ui.println(format!(
             "\n{} {}\n{}",
             paint::heading("Caveats for", 5),
-            paint::formula(name),
-            text.trim()
+            paint::formula(&name),
+            texts.join("\n\n")
         ));
     }
+    // formulae that can run in the background: say how
+    let svc_names: Vec<&String> = s
+        .installed
+        .iter()
+        .map(|(n, _, _)| n)
+        .filter(|n| {
+            receipt::find_formula(&ctx.paths, n)
+                .map(|i| {
+                    let (p, u) = pour_core::services::keg_files(&i.path, n);
+                    p.is_some() || u.is_some()
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    for n in svc_names {
+        ctx.ui.println(format!(
+            "\n{} {}\n  {}   {}\n  {}    {}\n  {} {}",
+            paint::heading("Run in the background:", 2),
+            paint::formula(n),
+            paint::cmd(&format!("pour services start {n}")),
+            paint::dim("# start now and at every login"),
+            paint::cmd(&format!("pour services stop {n}")),
+            paint::dim("# stop, and not at login"),
+            paint::cmd(&format!("pour services restart {n}")),
+            paint::dim("# restart · pour services list shows them all")
+        ));
+    }
+}
+
+/// Caveats as Homebrew writes them, for Pour: `$HOMEBREW_PREFIX` → the prefix, `brew` → `pour`.
+pub fn caveat_text(text: &str, prefix: &str) -> String {
+    text.trim()
+        .replace("$(brew --prefix)", prefix)
+        .replace("${HOMEBREW_PREFIX}", prefix)
+        .replace("$HOMEBREW_PREFIX", prefix)
+        .replace("${HOMEBREW_CELLAR}", &format!("{prefix}/Cellar"))
+        .replace("$HOMEBREW_CELLAR", &format!("{prefix}/Cellar"))
+        .replace("brew services", "pour services")
+        .replace("brew install", "pour install")
+        .replace("brew link", "pour link")
+        .replace("brew unlink", "pour unlink")
 }
 
 fn pkg_json(pkg: &Pkg, src: &str) -> serde_json::Value {
@@ -1960,11 +2050,7 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                     paint::dim("—"),
                     paint::cmd(&format!(
                         "pour install {}{}",
-                        if c.tap == "jks-sys/pour-tools" {
-                            ""
-                        } else {
-                            "--cask "
-                        },
+                        if is_tool_tap(&c.tap) { "" } else { "--cask " },
                         c.token
                     ))
                 )),
@@ -2107,6 +2193,226 @@ pub fn parse_brewfile(text: &str) -> Brewfile {
         }
     }
     (brews, casks, taps)
+}
+
+/// A formula's `service` block from Homebrew's API, for kegs without their own unit file.
+fn service_json(name: &str) -> Option<serde_json::Value> {
+    let url = format!("https://formulae.brew.sh/api/formula/{name}.json");
+    pour_core::net::get_json(&pour_core::net::agent(), &url, &[])
+        .ok()
+        .and_then(|v| v.get("service").cloned())
+        .filter(|s| !s.is_null())
+}
+
+fn state_colour(state: &str) -> String {
+    let h = if state == "started" {
+        Hue::Green
+    } else if state.starts_with("error") {
+        Hue::Red
+    } else if state == "stopped" {
+        Hue::Amber
+    } else {
+        Hue::Slate
+    };
+    let dot = match h {
+        Hue::Green => "●",
+        Hue::Red => "✗",
+        Hue::Amber => "◐",
+        _ => "○",
+    };
+    format!("{} {}", paint::b(h, dot), paint::b(h, state))
+}
+
+fn services_cmd(ctx: &Ctx, cli: &Cli, action: Option<&ServicesAction>) -> Result<()> {
+    let ui = ctx.ui;
+    let svc = pour_core::services::Services {
+        paths: &ctx.paths,
+        platform: &ctx.platform,
+    };
+    let names_of = |names: &[String], all: bool| -> Result<Vec<String>> {
+        if all {
+            return Ok(svc.list().into_iter().map(|s| s.name).collect());
+        }
+        if names.is_empty() {
+            return Err(err(
+                "name a formula (or --all): pour services start jackett",
+            ));
+        }
+        Ok(names.to_vec())
+    };
+    let show = |st: &pour_core::services::Status, verb: &str, hue: Hue| {
+        ui.println(format!(
+            "{} {} {}{}",
+            paint::b(hue, verb),
+            paint::formula(&st.name),
+            state_colour(&st.state),
+            st.pid
+                .map(|p| format!(" {}", paint::dim(&format!("pid {}", paint::number(p)))))
+                .unwrap_or_default()
+        ));
+        if let Some(l) = &st.log {
+            ui.note(format!("log: {}", paint::path(l)));
+        }
+    };
+    match action.unwrap_or(&ServicesAction::List) {
+        ServicesAction::List => {
+            let list = svc.list();
+            if cli.json {
+                let v: Vec<serde_json::Value> = list.iter().map(|s| serde_json::json!({"name": s.name, "status": s.state, "enabled": s.enabled, "pid": s.pid, "file": s.file, "log": s.log, "label": pour_core::services::label(&s.name)})).collect();
+                paint::print_json(&serde_json::Value::Array(v));
+                return Ok(());
+            }
+            if list.is_empty() {
+                ui.note(format!(
+                    "no installed formula runs as a service yet — e.g. {}",
+                    paint::cmd("pour install redis")
+                ));
+                return Ok(());
+            }
+            ui.section(format!("Services ({})", list.len()), 2);
+            ui.println(format!(
+                "  {}{} {}{} {}{} {}",
+                paint::b(Hue::Slate, "Name"),
+                " ".repeat(18),
+                paint::b(Hue::Slate, "Status"),
+                " ".repeat(10),
+                paint::b(Hue::Slate, "Login"),
+                " ".repeat(3),
+                paint::b(Hue::Slate, "File")
+            ));
+            for s in &list {
+                let pad = 22usize.saturating_sub(s.name.len());
+                let st = state_colour(&s.state);
+                let st_pad = 16usize.saturating_sub(s.state.len() + 2);
+                ui.println(format!(
+                    "  {}{} {}{} {}{} {}",
+                    paint::formula(&s.name),
+                    " ".repeat(pad),
+                    st,
+                    " ".repeat(st_pad),
+                    if s.enabled {
+                        paint::b(Hue::Green, "yes")
+                    } else {
+                        paint::dim("no")
+                    },
+                    " ".repeat(if s.enabled { 5 } else { 6 }),
+                    s.file
+                        .as_ref()
+                        .map(|f| paint::path(&f.display().to_string()))
+                        .unwrap_or_default()
+                ));
+            }
+        }
+        ServicesAction::Start { names, all }
+        | ServicesAction::Run { names, all }
+        | ServicesAction::Restart { names, all } => {
+            let which = match action.unwrap() {
+                ServicesAction::Start { .. } => "start",
+                ServicesAction::Run { .. } => "run",
+                _ => "restart",
+            };
+            for n in names_of(names, *all)? {
+                let local = receipt::find_formula(&ctx.paths, &n)
+                    .map(|i| pour_core::services::keg_files(&i.path, &n));
+                let need_json = matches!(local, Some((None, None)));
+                let json = if need_json { service_json(&n) } else { None };
+                ui.spin_start(format!("{which} {n}"));
+                let r = match which {
+                    "start" => svc.start(&n, json.as_ref()),
+                    "run" => svc.run(&n, json.as_ref()),
+                    _ => svc.restart(&n, json.as_ref()),
+                };
+                ui.spin_stop();
+                let st = r?;
+                show(
+                    &st,
+                    match which {
+                        "start" => "▶ started",
+                        "run" => "▶ running",
+                        _ => "↻ restarted",
+                    },
+                    Hue::Green,
+                );
+                if which == "start" {
+                    ui.note(format!(
+                        "starts again at every login · stop with {}",
+                        paint::cmd(&format!("pour services stop {n}"))
+                    ));
+                }
+            }
+            ui.cue(crate::ui::Cue::ServiceUp);
+        }
+        ServicesAction::Stop { names, all } => {
+            for n in names_of(names, *all)? {
+                let st = svc.stop(&n)?;
+                show(&st, "■ stopped", Hue::Orange);
+            }
+            ui.cue(crate::ui::Cue::ServiceDown);
+        }
+        ServicesAction::Info { name } => {
+            let st = svc.status(name);
+            if cli.json {
+                paint::print_json(
+                    &serde_json::json!({"name": st.name, "status": st.state, "enabled": st.enabled, "pid": st.pid, "file": st.file, "log": st.log, "label": pour_core::services::label(name)}),
+                );
+                return Ok(());
+            }
+            ui.println(format!("{} {}", arrow(), paint::formula(name)));
+            ui.println(format!(
+                "{} {}",
+                paint::b(Hue::Sky, "Status:"),
+                state_colour(&st.state)
+            ));
+            ui.println(format!(
+                "{} {}",
+                paint::b(Hue::Teal, "Label:"),
+                paint::tap(&pour_core::services::label(name))
+            ));
+            ui.println(format!(
+                "{} {}",
+                paint::b(Hue::Lime, "At login:"),
+                if st.enabled {
+                    paint::b(Hue::Green, "yes")
+                } else {
+                    paint::dim("no")
+                }
+            ));
+            if let Some(p) = st.pid {
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Cyan, "PID:"),
+                    paint::number(p)
+                ));
+            }
+            if let Some(f) = &st.file {
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Violet, "File:"),
+                    paint::path(&f.display().to_string())
+                ));
+            }
+            if let Some(l) = &st.log {
+                ui.println(format!(
+                    "{} {}",
+                    paint::b(Hue::Orange, "Log:"),
+                    paint::path(l)
+                ));
+            }
+        }
+        ServicesAction::Cleanup => {
+            let gone = svc.cleanup();
+            if gone.is_empty() {
+                ui.ok("nothing to clean up");
+            } else {
+                ui.ok(format!(
+                    "removed services of formulae no longer installed: {}",
+                    gone.join(", ")
+                ));
+                ui.cue(crate::ui::Cue::Cleaned);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn doctor(ctx: &Ctx) -> Result<()> {

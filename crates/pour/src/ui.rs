@@ -22,6 +22,8 @@ pub struct Ui {
     poured: AtomicBool,
     /// The sound this command ends with when it succeeds (set by the command).
     cue: Mutex<Option<Cue>>,
+    /// A spinner for one long step (services, update).
+    spinner: Mutex<Option<ProgressBar>>,
 }
 
 /// What a command did, for its closing sound. Each has its own sound on macOS,
@@ -35,6 +37,8 @@ pub enum Cue {
     Found,
     Cleaned,
     Registered,
+    ServiceUp,
+    ServiceDown,
 }
 
 pub fn arrow() -> String {
@@ -57,6 +61,7 @@ impl Ui {
             phase_started: Mutex::new(None),
             poured: AtomicBool::new(false),
             cue: Mutex::new(None),
+            spinner: Mutex::new(None),
         }
     }
 
@@ -74,6 +79,83 @@ impl Ui {
     /// A heading in the i-th section colour.
     pub fn section(&self, s: impl AsRef<str>, i: usize) {
         self.println(paint::heading(s.as_ref(), i));
+    }
+
+    /// A spinner while one step runs: a glass filling and emptying in every colour but pink.
+    pub fn spin_start(&self, msg: impl Into<String>) {
+        if self.quiet || self.json || !Term::stderr().is_term() {
+            return;
+        }
+        let b = self.multi.add(ProgressBar::new_spinner());
+        b.set_style(
+            ProgressStyle::with_template("  {spinner} {msg:.43.bold}")
+                .unwrap()
+                .tick_strings(&[
+                    "\x1b[38;5;179m▁\x1b[0m",
+                    "\x1b[38;5;214m▂\x1b[0m",
+                    "\x1b[38;5;209m▃\x1b[0m",
+                    "\x1b[38;5;149m▄\x1b[0m",
+                    "\x1b[38;5;78m▅\x1b[0m",
+                    "\x1b[38;5;43m▆\x1b[0m",
+                    "\x1b[38;5;45m▇\x1b[0m",
+                    "\x1b[38;5;39m█\x1b[0m",
+                    "\x1b[38;5;75m▇\x1b[0m",
+                    "\x1b[38;5;105m▆\x1b[0m",
+                    "\x1b[38;5;141m▅\x1b[0m",
+                    "\x1b[38;5;179m▄\x1b[0m",
+                    "",
+                ]),
+        );
+        b.set_message(msg.into());
+        b.enable_steady_tick(Duration::from_millis(70));
+        *self.spinner.lock().unwrap() = Some(b);
+    }
+
+    pub fn spin_stop(&self) {
+        if let Some(b) = self.spinner.lock().unwrap().take() {
+            b.finish_and_clear();
+        }
+    }
+
+    /// A card with a gold frame for the end of a big step: a title and coloured lines.
+    /// Plain lines in pipes, CI logs keep the frame (they render it fine).
+    pub fn card(&self, title: &str, lines: &[String]) {
+        if self.quiet || self.json {
+            return;
+        }
+        let vis = |t: &str| console::measure_text_width(t);
+        let w = lines
+            .iter()
+            .map(|l| vis(l))
+            .chain(std::iter::once(vis(title) + 2))
+            .max()
+            .unwrap_or(20)
+            .min(96)
+            + 2;
+        let gold = |t: &str| paint::c(Hue::Gold, t);
+        self.println(format!(
+            "{}{} {} {}{}",
+            gold("╭"),
+            gold("─"),
+            paint::b(Hue::Gold, title),
+            gold(&"─".repeat(w.saturating_sub(vis(title) + 3))),
+            gold("╮")
+        ));
+        for l in lines {
+            self.println(format!(
+                "{} {}{} {}",
+                gold("│"),
+                l,
+                " ".repeat(w.saturating_sub(vis(l) + 2)),
+                gold("│")
+            ));
+        }
+        self.println(format!(
+            "{}{}{}",
+            gold("╰"),
+            gold(&"─".repeat(w)),
+            gold("╯")
+        ));
     }
 
     /// Choose the closing sound for a successful command.
@@ -179,6 +261,8 @@ fn sound_for(c: Option<Cue>) -> (&'static str, &'static str, &'static str) {
         Some(Cue::Found) => ("Tink", "bell", "Windows Ding"),
         Some(Cue::Cleaned) => ("Purr", "trash-empty", "Windows Recycle"),
         Some(Cue::Registered) => ("Submarine", "dialog-information", "Windows Notify Calendar"),
+        Some(Cue::ServiceUp) => ("Ping", "service-login", "Windows Hardware Insert"),
+        Some(Cue::ServiceDown) => ("Blow", "service-logout", "Windows Hardware Remove"),
         None => ("Basso", "dialog-error", "Windows Critical Stop"),
     }
 }

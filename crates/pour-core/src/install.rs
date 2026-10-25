@@ -369,14 +369,24 @@ impl Engine<'_> {
                 if s.formula.keg_only {
                     summary.caveats.push((
                         name.clone(),
-                        format!(
-                            "{name} is keg-only: it is not symlinked into {} because {}",
-                            self.paths.prefix_str(),
-                            s.formula
+                        {
+                            let p = self.paths.prefix_str();
+                            let why = s
+                                .formula
                                 .keg_only_reason
                                 .clone()
-                                .unwrap_or_else(|| "Homebrew marks it keg-only".into())
-                        ),
+                                .filter(|r| !r.trim().is_empty())
+                                .unwrap_or_else(|| {
+                                    if name.contains('@') {
+                                        "it is an alternative version, so it does not replace the default one".into()
+                                    } else {
+                                        "something on the system provides the same files".into()
+                                    }
+                                });
+                            format!(
+                                "{name} is keg-only: it is not linked into {p}, because {why}.\nTo use it, put it first on your PATH:\n  export PATH=\"{p}/opt/{name}/bin:$PATH\""
+                            )
+                        },
                     ));
                 }
                 summary.installed.push((

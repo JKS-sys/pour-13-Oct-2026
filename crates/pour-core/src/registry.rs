@@ -35,7 +35,24 @@ pub const DEFAULT_TAPS: &[(&str, &str)] = &[
         "jks-sys/pour-desktop",
         "https://ipconfig.co.network/pour/desktop/index.json",
     ),
+    // Windows software synced every six hours from the Scoop community buckets, kept only
+    // when it qualifies (see pour-apps/build-scoop.mjs). Fetched on Windows only.
+    (
+        "jks-sys/pour-windows",
+        "https://ipconfig.co.network/pour/windows/index.json",
+    ),
 ];
+
+/// A default registry this build of Pour needs: desktop installers are for Windows,
+/// Linux and FreeBSD (a Mac has Homebrew's casks); the Scoop-synced one is for Windows.
+/// Skipping the others keeps the index on disk small.
+pub fn default_tap_here(name: &str) -> bool {
+    match name {
+        "jks-sys/pour-desktop" => !cfg!(target_os = "macos"),
+        "jks-sys/pour-windows" => cfg!(windows),
+        _ => true,
+    }
+}
 pub const TAP_FALLBACKS: &[(&str, &str)] = &[
     (
         "jks-sys/pour-apps",
@@ -48,6 +65,10 @@ pub const TAP_FALLBACKS: &[(&str, &str)] = &[
     (
         "jks-sys/pour-desktop",
         "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/desktop.index.json",
+    ),
+    (
+        "jks-sys/pour-windows",
+        "https://raw.githubusercontent.com/JKS-sys/pour-apps-13-Oct-2026/main/windows.index.json",
     ),
 ];
 
@@ -157,6 +178,9 @@ pub fn taps(paths: &Paths) -> Vec<Tap> {
         .and_then(|t| serde_json::from_str::<Vec<Tap>>(&t).ok())
         .unwrap_or_default();
     for (n, u) in DEFAULT_TAPS {
+        if !default_tap_here(n) {
+            continue;
+        }
         if !list.iter().any(|t| t.name == *n) {
             list.push(Tap {
                 name: n.to_string(),
@@ -301,7 +325,16 @@ impl Registry {
                         Some(k) => s.index.find(k, spec),
                         None => s.index.find_any(spec),
                     };
-                    hit.map(|p| (s.name.clone(), p))
+                    // only a real alias of the whole spec counts, never just its last part
+                    hit.filter(|p| match p {
+                        Pkg::Cask(c) => c.old_tokens.iter().any(|t| t.eq_ignore_ascii_case(spec)),
+                        Pkg::Formula(f) => f
+                            .aliases
+                            .iter()
+                            .chain(f.oldnames.iter())
+                            .any(|t| t.eq_ignore_ascii_case(spec)),
+                    })
+                    .map(|p| (s.name.clone(), p))
                 })
             } else {
                 None

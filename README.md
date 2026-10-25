@@ -145,6 +145,8 @@ pour uninstall --zap firefox        # remove an app with its preferences and cac
 pour bundle                         # install from the Brewfile in this directory
 pour list                           # Pour's packages, then what Homebrew installed here and how much of it Pour has
 pour list -1                        # one name per line (what scripts read; pipes get this too)
+pour services start jackett         # run in the background now and at every login (launchd / systemd)
+pour services list                  # every service and its status · stop · restart · run · info · cleanup
 pour migrate                        # install everything Homebrew has on this machine (brew need not be on PATH)
 pour register mytool --cli …        # register an app or a tool: checked automatically, listed at once
 pour list · outdated · leaves · deps ffmpeg --tree · uses openssl@3
@@ -190,6 +192,25 @@ Every kind of thing has its own colour, so a glance tells them apart — and the
 
 In CI (GitHub Actions, GitLab, Buildkite, Azure Pipelines, CircleCI) Pour turns its colours on by itself; [pour-action](https://github.com/JKS-sys/pour-action-13-Oct-2026) adds a banner, one collapsible group per step, a timing for every package and a job summary with bars and a chart of where the time went. CI machines have no speakers, so the sounds stay on your desktop.
 
+## Services
+
+Formulae that run in the background (databases, servers, indexers — redis, mysql, nginx, jackett, ollama…) start with `pour services start NAME`: on macOS a LaunchAgent in `~/Library/LaunchAgents` (a LaunchDaemon with sudo), on Linux a systemd user unit in `~/.config/systemd/user`. Pour uses the service file the bottle ships (already pointing at `/opt/pour`) and gives it its own label, `pour.NAME`, so a Homebrew service of the same formula never collides; a keg without one gets a unit built from the formula's service definition. `stop` also removes it from login, `run` starts it just this once, `info` shows the label, PID, file and log, `cleanup` removes services of formulae you uninstalled — and `pour uninstall` stops a running service first.
+
+## Where packages come from, and what qualifies
+
+Everything syncs by itself; nobody approves entries by hand. Each source has fixed, automatic rules, and an entry that breaks them is left out (and listed with its reason) until it is fixed upstream.
+
+| Registry | Source | Syncs | What qualifies |
+|---|---|---|---|
+| homebrew | Homebrew's public API (formulae.brew.sh) | every 4 h | everything Homebrew publishes, added and removed with Homebrew; disabled formulae fall back to a vendor build |
+| pour-tools | GitHub releases and vendor download folders (nodejs.org, dl.min.io) | every 6 h | public, not archived, a licence, a stable release, a SHA-256 for every download, builds for at least two systems |
+| pour-desktop | GitHub releases | every 6 h | a licence (or the vendor's own release repository), a stable release, a SHA-256 for every installer; installers by system (msi/exe, AppImage/deb) |
+| pour-windows | Scoop buckets ScoopInstaller/Main and /Extras | every 6 h | stable version, licence, https homepage, a 64-bit https download with SHA-256, no PowerShell steps or installer scripts, no dependencies, programs named |
+| pour-apps | each app's release feed + the ipconfig dashboard | every 6 h and at every release | an app made at ipconfig.co.network whose feed answers with a version and a download |
+| registered | `pour register` / `POST /pour/api/register` | within a minute | a free id, a 10–200-character description, an https page that answers, downloads that answer with a file ≤ 2 GB and carry their SHA-256 (or come from a release feed), plain program names, 10 new a day per address |
+
+`https://ipconfig.co.network/pour/api/sources` lists the same live, with counts.
+
 ## Registries
 
 The [Pour registry](https://github.com/JKS-sys/pour-registry-13-Oct-2026) re-indexes Homebrew's formulae and casks every four hours from Homebrew's public API and logs what it registered and de-registered. [pour-apps](https://github.com/JKS-sys/pour-apps-13-Oct-2026) registers the creator's own applications with their live release feeds, and **pour-tools** — 125 command-line tools (gh, rclone, yt-dlp, ffmpeg, git, cmake, ninja, caddy, cloudflared, ripgrep, uv, deno, bun…) with their own builds for macOS, Linux (x86_64, arm64, i686), Windows (x86_64, arm64) and FreeBSD, about 800 downloads in all, each with its SHA-256. A tool is listed only when it qualifies — a stable release, a licence, a checksum for every download, at least two systems — and the list is rebuilt every six hours. Their names are Homebrew's names, so `pour install gh` is the same command everywhere: Homebrew's bottle where one exists, the tool's own build where not. **pour-desktop** does the same for desktop apps: 53 apps (Obsidian, VSCodium, OBS, Audacity, LocalSend, RustDesk, Bruno, DBeaver, MongoDB Compass, Joplin, Logseq, FreeCAD, MuseScore, PowerToys, Notepad++…) with their own installers for Windows (msi, exe — x86_64 and arm64) and Linux (AppImage, deb — x86_64 and arm64), named like Homebrew's casks, so `pour install --cask obsidian` is one command on every system. Vendors' own download folders count too when they publish checksums: `node@18` (disabled in Homebrew) comes from nodejs.org, `minio/aistor/mc` and `minio/aistor/minio` from dl.min.io. Any JSON file in Homebrew's API shape is a registry: `pour tap add you/apps https://example.com/index.json`.
@@ -221,7 +242,7 @@ No one approves anything by hand. The registry checks it on the spot — an id n
 ## Build and release
 
 ```sh
-cargo test                      # 55 unit tests + the CLI
+cargo test                      # 57 unit tests + the CLI
 cargo build --release -p pour   # target/release/pour
 bash update.sh                  # the one script: tests, every platform (zig cross-builds), release,
                                 # R2 mirror, registry sync, apps, site deploy, repo details

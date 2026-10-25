@@ -31,3 +31,4 @@ pub mod lock;
 pub mod postinstall;
 pub mod resolve;
 pub mod selfupdate;
+pub mod services;

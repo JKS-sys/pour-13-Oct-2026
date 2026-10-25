@@ -258,6 +258,11 @@ pub enum Command {
         #[arg(long)]
         key: Option<String>,
     },
+    /// Run installed formulae in the background (launchd on macOS, systemd on Linux)
+    Services {
+        #[command(subcommand)]
+        action: Option<ServicesAction>,
+    },
     /// Check the installation for problems
     Doctor,
     /// Remove unused store entries and downloads
@@ -323,6 +328,42 @@ pub enum TapAction {
     Remove { name: String },
     /// List registries
     List,
+}
+
+#[derive(Subcommand)]
+pub enum ServicesAction {
+    /// Every installed formula that can run as a service, and its status (default)
+    List,
+    /// Start now and at every login
+    Start {
+        /// Formula names
+        names: Vec<String>,
+        /// Every service of an installed formula
+        #[arg(long)]
+        all: bool,
+    },
+    /// Stop now and at login
+    Stop {
+        names: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Stop, then start again
+    Restart {
+        names: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Start now only (not at the next login)
+    Run {
+        names: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Status, unit file and log of one service
+    Info { name: String },
+    /// Remove services whose formula is no longer installed
+    Cleanup,
 }
 
 #[derive(Subcommand)]
