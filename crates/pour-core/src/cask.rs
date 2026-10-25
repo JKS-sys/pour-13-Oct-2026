@@ -898,11 +898,36 @@ impl CaskEngine<'_> {
             token: token.clone(),
             msg,
         };
-        let content_root = if container == Container::Dmg {
+        let mut content_root = if container == Container::Dmg {
             stage.join("mount")
         } else {
             stage.to_path_buf()
         };
+        // Casks whose programs live inside their own Caskroom folder (android-platform-tools:
+        // `$HOMEBREW_PREFIX/Caskroom/<token>/<version>/platform-tools/adb`) expect the download
+        // to be unpacked there, as Homebrew does; the staging folder is deleted afterwards.
+        if artifacts_json.contains("/Caskroom/") && container != Container::Dmg {
+            let room = self
+                .paths
+                .caskroom()
+                .join(&cask.token)
+                .join(&summary.version);
+            std::fs::create_dir_all(&room).map_err(|e| fail(format!("{}: {e}", room.display())))?;
+            for e in std::fs::read_dir(stage)?.flatten() {
+                let to = room.join(e.file_name());
+                if to.exists() {
+                    let _ = store::remove_tree(&to);
+                }
+                move_or_copy(&e.path(), &to).map_err(|er| {
+                    fail(format!("{} → {}: {er}", e.path().display(), to.display()))
+                })?;
+            }
+            content_root = room;
+        }
+        let artifacts_json = &artifacts_json.replace(
+            "$HOMEBREW_PREFIX/Caskroom",
+            &self.paths.caskroom().to_string_lossy(),
+        );
         let appdir = self.appdir(opts);
 
         // Non-macOS: a native installer is the whole story.
@@ -1087,7 +1112,8 @@ impl CaskEngine<'_> {
                                 None => default_dir.join(src.file_name().unwrap_or_default()),
                             };
                             if let Some(d) = dest.parent() {
-                                std::fs::create_dir_all(d)?;
+                                std::fs::create_dir_all(d)
+                                    .map_err(|e| fail(format!("{}: {e}", d.display())))?;
                             }
                             if dest.exists() || dest.is_symlink() {
                                 let _ = store::remove_tree(&dest);
@@ -1102,7 +1128,9 @@ impl CaskEngine<'_> {
                                     continue;
                                 }
                                 #[cfg(unix)]
-                                std::os::unix::fs::symlink(&src, &dest)?;
+                                std::os::unix::fs::symlink(&src, &dest).map_err(|e| {
+                                    fail(format!("{} → {}: {e}", dest.display(), src.display()))
+                                })?;
                                 #[cfg(unix)]
                                 {
                                     use std::os::unix::fs::PermissionsExt;
