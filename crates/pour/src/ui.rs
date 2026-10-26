@@ -182,6 +182,24 @@ impl Ui {
                 });
                 std::thread::sleep(Duration::from_millis(45));
             }
+            // a short burst of colour sparks before the line settles
+            let sparks = ["·", "✦", "✧", "⋆", "✦", "·"];
+            for k in 0..6 {
+                let line: String = (0..14)
+                    .map(|i| {
+                        paint::b(
+                            paint::DEPTH[(i + k) % paint::DEPTH.len()],
+                            sparks[(i + k) % sparks.len()],
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.multi.suspend(|| {
+                    print!("\r  {line}");
+                    let _ = std::io::stdout().flush();
+                });
+                std::thread::sleep(Duration::from_millis(40));
+            }
             self.multi.suspend(|| {
                 print!("\r\x1b[2K");
                 let _ = std::io::stdout().flush();

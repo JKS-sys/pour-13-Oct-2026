@@ -29,6 +29,22 @@ struct Ctx<'a> {
     adopt: std::cell::Cell<bool>,
 }
 
+/// The first `name` on PATH when it is not Pour's own (nvm, nodejs.org, Homebrew…).
+fn which_other(name: &str, paths: &Paths) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for d in std::env::split_paths(&path) {
+        let f = d.join(name);
+        if f.is_file() || f.is_symlink() {
+            let real = std::fs::canonicalize(&f).unwrap_or(f.clone());
+            if real.starts_with(&paths.prefix) || d.starts_with(&paths.prefix) {
+                return None;
+            }
+            return Some(f.display().to_string());
+        }
+    }
+    None
+}
+
 /// Registries of command-line programs (installed with `pour install NAME`, no --cask).
 fn is_tool_tap(t: &str) -> bool {
     matches!(t, "jks-sys/pour-tools" | "jks-sys/pour-windows")
@@ -508,6 +524,69 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
         } => {
             let reg = ctx.registry()?;
             let k = ctx.kind(kind);
+            // `pour upgrade node` when Pour never installed node (it came from nvm, the
+            // installer from nodejs.org, Homebrew…): install it, say so, and point out
+            // which copy the shell will still find first.
+            let missing: Vec<String> = names
+                .iter()
+                .filter(|n| {
+                    receipt::find_formula(&ctx.paths, n).is_none()
+                        && receipt::find_cask(&ctx.paths, n).is_none()
+                })
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                for n in &missing {
+                    let other = which_other(n, &ctx.paths);
+                    ui.note(format!(
+                        "{} is not installed by Pour{} — installing it",
+                        paint::formula(n),
+                        other
+                            .map(|o| format!(" (the {} on your PATH is {})", n, paint::path(&o)))
+                            .unwrap_or_default()
+                    ));
+                }
+                if !*dry_run {
+                    let (formulae, casks) = ctx.classify(&reg, &missing, k)?;
+                    if !formulae.is_empty() {
+                        let plan = resolve::plan(
+                            &reg,
+                            &ctx.paths,
+                            &ctx.platform,
+                            &formulae,
+                            &PlanOptions::default(),
+                        )?;
+                        print_plan(&ctx, &plan);
+                        let summary = ctx.engine().install(
+                            &plan,
+                            &Options {
+                                threads: 16,
+                                ..Default::default()
+                            },
+                        )?;
+                        print_summary(&ctx, &summary);
+                    }
+                    ctx.install_casks(&reg, &casks, false, false)?;
+                    for n in &missing {
+                        if let Some(o) = which_other(n, &ctx.paths) {
+                            ui.warn(format!(
+                                "your shell still finds {} first — put Pour first on PATH: {}   (then open a new terminal, or run: hash -r)",
+                                paint::path(&o),
+                                paint::cmd("eval \"$(pour shellenv)\"")
+                            ));
+                        }
+                    }
+                }
+                if missing.len() == names.len() {
+                    return Ok(());
+                }
+            }
+            let names: Vec<String> = names
+                .iter()
+                .filter(|n| !missing.contains(n))
+                .cloned()
+                .collect();
+            let names = &names;
             if k != Some(Kind::Cask) {
                 let outdated = resolve::outdated(&reg, &ctx.paths);
                 let targets: Vec<String> = if names.is_empty() {
@@ -529,6 +608,16 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 if targets.is_empty() {
                     if names.is_empty() || k == Some(Kind::Formula) {
                         ui.ok("all formulae are up to date");
+                    } else {
+                        for n in names {
+                            if let Some(i) = receipt::find_formula(&ctx.paths, n) {
+                                ui.ok(format!(
+                                    "{} {} is up to date",
+                                    paint::formula(n),
+                                    paint::version(&i.receipt.version)
+                                ));
+                            }
+                        }
                     }
                 } else {
                     for (i, f) in &outdated {
