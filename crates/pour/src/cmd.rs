@@ -1100,6 +1100,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     reg: &Registry,
                     name: &str,
                     linux: bool,
+                    prefix: &str,
                     depth: usize,
                     seen: &mut std::collections::HashSet<String>,
                     out: &mut String,
@@ -1107,16 +1108,25 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     let Ok((_, f)) = resolve::lookup_formula(reg, name) else {
                         return;
                     };
-                    for d in f.runtime_deps(linux) {
-                        let _ = writeln!(out, "{}{}", "  ".repeat(depth), d);
-                        if seen.insert(d.clone()) {
-                            walk(reg, &d, linux, depth + 1, seen, out);
+                    let deps = f.runtime_deps(linux);
+                    let n = deps.len();
+                    let hue = paint::DEPTH[depth % paint::DEPTH.len()];
+                    for (i, d) in deps.into_iter().enumerate() {
+                        // branches in the colour of their depth, names in teal, repeats dimmed
+                        let last = i + 1 == n;
+                        let branch = paint::c(hue, if last { "└─ " } else { "├─ " });
+                        let first = seen.insert(d.clone());
+                        let label = if first { paint::formula(&d) } else { paint::dim(&format!("{d} ↺")) };
+                        let _ = writeln!(out, "{prefix}{branch}{label}");
+                        if first {
+                            let next = format!("{prefix}{}", if last { "   ".to_string() } else { paint::c(hue, "│  ") });
+                            walk(reg, &d, linux, &next, depth + 1, seen, out);
                         }
                     }
                 }
                 let mut out = String::new();
-                println!("{}", f.name);
-                walk(&reg, &f.name, linux, 1, &mut Default::default(), &mut out);
+                println!("{} {}", paint::b(Hue::Gold, "🍶"), paint::formula(&f.name));
+                walk(&reg, &f.name, linux, "", 1, &mut Default::default(), &mut out);
                 print!("{out}");
             } else {
                 let mut all = std::collections::BTreeSet::new();
