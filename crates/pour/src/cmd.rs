@@ -1116,17 +1116,36 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         let last = i + 1 == n;
                         let branch = paint::c(hue, if last { "└─ " } else { "├─ " });
                         let first = seen.insert(d.clone());
-                        let label = if first { paint::formula(&d) } else { paint::dim(&format!("{d} ↺")) };
+                        let label = if first {
+                            paint::formula(&d)
+                        } else {
+                            paint::dim(&format!("{d} ↺"))
+                        };
                         let _ = writeln!(out, "{prefix}{branch}{label}");
                         if first {
-                            let next = format!("{prefix}{}", if last { "   ".to_string() } else { paint::c(hue, "│  ") });
+                            let next = format!(
+                                "{prefix}{}",
+                                if last {
+                                    "   ".to_string()
+                                } else {
+                                    paint::c(hue, "│  ")
+                                }
+                            );
                             walk(reg, &d, linux, &next, depth + 1, seen, out);
                         }
                     }
                 }
                 let mut out = String::new();
                 println!("{} {}", paint::b(Hue::Gold, "🍶"), paint::formula(&f.name));
-                walk(&reg, &f.name, linux, "", 1, &mut Default::default(), &mut out);
+                walk(
+                    &reg,
+                    &f.name,
+                    linux,
+                    "",
+                    1,
+                    &mut Default::default(),
+                    &mut out,
+                );
                 print!("{out}");
             } else {
                 let mut all = std::collections::BTreeSet::new();
