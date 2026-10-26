@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "pour"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "clap_complete",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "pour-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "flate2",
  "glob",
