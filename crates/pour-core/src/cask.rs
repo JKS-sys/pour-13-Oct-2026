@@ -348,6 +348,57 @@ enum Container {
     AppImage,
 }
 
+/// Homebrew's `container nested:` — the download holds another archive (Steam: a zip with
+/// SteamMacBootstrapper.tar.gz inside). When the staged top level has no app or bundle but
+/// does hold archives, open them in place.
+fn unpack_nested(stage: &Path, container: Container) -> Result<()> {
+    if !matches!(container, Container::Zip | Container::Tar) {
+        return Ok(());
+    }
+    let Ok(rd) = std::fs::read_dir(stage) else {
+        return Ok(());
+    };
+    let entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    let has_bundle = entries.iter().any(|p| {
+        p.is_dir()
+            && p.extension().is_some_and(|x| {
+                matches!(x.to_str(), Some("app" | "pkg" | "prefPane" | "qlgenerator"))
+            })
+    });
+    if has_bundle {
+        return Ok(());
+    }
+    for p in entries {
+        let n = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let tar = n.ends_with(".tar.gz")
+            || n.ends_with(".tgz")
+            || n.ends_with(".tar")
+            || n.ends_with(".tar.xz")
+            || n.ends_with(".tar.bz2");
+        if tar {
+            sh(Command::new("tar").arg("-xf").arg(&p).arg("-C").arg(stage)).map_err(|e| {
+                CaskError::Io(std::io::Error::other(format!("{}: {e}", p.display())))
+            })?;
+            let _ = std::fs::remove_file(&p);
+        } else if n.ends_with(".zip") {
+            let st = Command::new("unzip")
+                .args(["-q", "-o"])
+                .arg(&p)
+                .arg("-d")
+                .arg(stage)
+                .status();
+            if matches!(st.map(|s| s.code()), Ok(Some(0 | 1))) {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn container_for(url: &str, hint: Option<&str>, kind: Option<&str>) -> Container {
     let path = url
         .split(['?', '#'])
@@ -747,7 +798,9 @@ impl CaskEngine<'_> {
             native.as_ref().map(|n| n.kind.as_str()),
         );
         let mut mounted: Option<PathBuf> = None;
-        let unpack_result = self.unpack(&file, &stage, container, &mut mounted);
+        let unpack_result = self
+            .unpack(&file, &stage, container, &mut mounted)
+            .and_then(|()| unpack_nested(&stage, container));
         let artifacts_json = art_override.unwrap_or_else(|| cask.artifacts.clone());
         let result = match unpack_result {
             Ok(()) => self.place(
@@ -868,12 +921,26 @@ impl CaskEngine<'_> {
                 Ok(())
             }
             Container::Zip => {
-                if Path::new("/usr/bin/ditto").exists() {
-                    sh(Command::new("/usr/bin/ditto")
+                let ditto_ok = Path::new("/usr/bin/ditto").exists()
+                    && sh(Command::new("/usr/bin/ditto")
                         .args(["-x", "-k"])
                         .arg(file)
                         .arg(stage))
-                    .map_err(fail)?;
+                    .is_ok();
+                if ditto_ok {
+                } else if Path::new("/usr/bin/unzip").exists() || which("unzip") {
+                    // unzip copes with bytes before the archive (Steam's zip has a prefix that
+                    // ditto refuses: "Couldn't read PKZip signature"); exit 1 is only a warning.
+                    let st = Command::new("unzip")
+                        .args(["-q", "-o"])
+                        .arg(file)
+                        .arg("-d")
+                        .arg(stage)
+                        .status()
+                        .map_err(|e| fail(format!("unzip: {e}")))?;
+                    if !matches!(st.code(), Some(0) | Some(1)) {
+                        return Err(fail(format!("unzip failed ({st}) on {}", file.display())));
+                    }
                 } else if Path::new("/usr/bin/unzip").exists() || which("unzip") {
                     sh(Command::new("unzip")
                         .args(["-q", "-o"])
@@ -1879,5 +1946,31 @@ mod tests {
             expand_home("~/Library/X"),
             format!("{}/Library/X", crate::paths::home().display())
         );
+    }
+}
+
+#[cfg(test)]
+mod nested_tests {
+    #[test]
+    fn opens_an_archive_inside_the_download() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("Steam.app/Contents")).unwrap();
+        std::fs::write(src.join("Steam.app/Contents/Info.plist"), "x").unwrap();
+        let stage = d.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let ok = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(stage.join("Boot.tar.gz"))
+            .arg("-C")
+            .arg(&src)
+            .arg("Steam.app")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        super::unpack_nested(&stage, super::Container::Zip).unwrap();
+        assert!(stage.join("Steam.app/Contents/Info.plist").is_file());
+        assert!(!stage.join("Boot.tar.gz").exists());
     }
 }
