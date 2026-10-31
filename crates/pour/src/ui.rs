@@ -41,6 +41,16 @@ pub enum Cue {
     ServiceDown,
 }
 
+/// The kinds of vector scene `Ui::scene` draws.
+#[derive(Clone, Copy, Debug)]
+pub enum Scene {
+    Sweep,
+    Wave,
+    Rise,
+    Fade,
+    Orbit,
+}
+
 pub fn arrow() -> String {
     paint::b(Hue::Sky, "==>")
 }
@@ -206,6 +216,102 @@ impl Ui {
             });
         }
         self.println(format!("{} {}", paint::b(Hue::Gold, "🥂"), done.as_ref()));
+    }
+
+    /// A short vector-style scene (≈0.3–0.5 s) drawn with box and block glyphs, one per
+    /// kind of event, each glyph in its own hue (never pink). Skipped in pipes, CI,
+    /// --quiet/--json and with POUR_ANIMATIONS=0.
+    pub fn scene(&self, kind: Scene) {
+        if self.quiet || self.json {
+            return;
+        }
+        if !Term::stdout().is_term() || std::env::var_os("CI").is_some() || reduced_motion() {
+            return;
+        }
+        use std::io::Write;
+        let w = 18usize;
+        let frames: Vec<String> = match kind {
+            // a broom sweeps left to right, dust settles behind it
+            Scene::Sweep => (0..w)
+                .map(|x| {
+                    (0..w)
+                        .map(|i| {
+                            if i == x {
+                                paint::b(Hue::Amber, "🧹")
+                            } else if i < x {
+                                paint::c(paint::DEPTH[i % paint::DEPTH.len()], "·")
+                            } else {
+                                paint::c(Hue::Slate, "░")
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            // a wave of colour travels along the line: the index refreshing
+            Scene::Wave => (0..w)
+                .map(|k| {
+                    let bars = ["▁", "▂", "▃", "▅", "▆", "▇", "▆", "▅", "▃", "▂"];
+                    (0..w)
+                        .map(|i| {
+                            paint::b(
+                                paint::DEPTH[(i + k) % paint::DEPTH.len()],
+                                bars[(i + w - k) % bars.len()],
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
+            // bars climb in a staircase: something got newer
+            Scene::Rise => (1..=8)
+                .map(|k| {
+                    let bars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+                    (0..8)
+                        .map(|i| {
+                            let h = (i + 1).min(k);
+                            paint::b(paint::DEPTH[i % paint::DEPTH.len()], bars[h - 1])
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect(),
+            // a full line dissolves into dots: something was taken away
+            Scene::Fade => (0..6)
+                .map(|k| {
+                    let g = ["█", "▓", "▒", "░", "·", " "][k];
+                    (0..w)
+                        .map(|i| paint::c(paint::DEPTH[i % paint::DEPTH.len()], g))
+                        .collect()
+                })
+                .collect(),
+            // a ring of colour turns: a check passed
+            Scene::Orbit => (0..12)
+                .map(|k| {
+                    let ring = ["◜", "◝", "◞", "◟"];
+                    format!(
+                        "{} {}",
+                        paint::b(paint::DEPTH[k % paint::DEPTH.len()], ring[k % 4]),
+                        (0..10)
+                            .map(|i| paint::b(
+                                paint::DEPTH[(i + k) % paint::DEPTH.len()],
+                                if (i + k) % 3 == 0 { "◆" } else { "◇" }
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    )
+                })
+                .collect(),
+        };
+        for f in &frames {
+            self.multi.suspend(|| {
+                print!("\r  {f}");
+                let _ = std::io::stdout().flush();
+            });
+            std::thread::sleep(Duration::from_millis(28));
+        }
+        self.multi.suspend(|| {
+            print!("\r\x1b[2K");
+            let _ = std::io::stdout().flush();
+        });
     }
 
     pub fn warn(&self, s: impl AsRef<str>) {

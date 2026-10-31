@@ -108,8 +108,38 @@ fn run_privileged(args: &[&str]) -> std::result::Result<String, String> {
 
 fn expand_home(p: &str) -> String {
     let home = crate::paths::home().to_string_lossy().into_owned();
-    p.replace("$HOME", &home)
-        .replacen("~", &home, if p.starts_with('~') { 1 } else { 0 })
+    // `$HOME` only as a whole word: `$HOMEBREW_PREFIX` is left for the prefix substitution
+    let mut out = String::with_capacity(p.len());
+    let mut rest = p;
+    while let Some(i) = rest.find("$HOME") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 5..];
+        if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            out.push_str("$HOME");
+        } else {
+            out.push_str(&home);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    if out.starts_with('~') {
+        out = out.replacen('~', &home, 1);
+    }
+    out
+}
+
+#[cfg(test)]
+mod expand_home_tests {
+    #[test]
+    fn keeps_homebrew_prefix() {
+        let h = crate::paths::home().to_string_lossy().into_owned();
+        assert_eq!(
+            super::expand_home("$HOMEBREW_PREFIX/bin"),
+            "$HOMEBREW_PREFIX/bin"
+        );
+        assert_eq!(super::expand_home("$HOME/x"), format!("{h}/x"));
+        assert_eq!(super::expand_home("~/y"), format!("{h}/y"));
+    }
 }
 
 /// `depends_on` checks.

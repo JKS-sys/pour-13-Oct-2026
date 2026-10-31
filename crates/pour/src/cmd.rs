@@ -128,8 +128,26 @@ impl Ctx<'_> {
             "done in {}",
             paint::b(Hue::Gold, human_ms(t.elapsed().as_millis()))
         ));
+        self.ui.scene(crate::ui::Scene::Wave);
         self.ui.cue(crate::ui::Cue::Updated);
         Ok(())
+    }
+
+    /// `classify`, but a name the cached index does not know triggers one forced index
+    /// refresh and a retry — a package added since the last update (a new app) is found.
+    fn classify_fresh(&self, names: &[String], kind: Option<Kind>) -> Result<(Registry, Split)> {
+        let reg = self.registry()?;
+        match self.classify(&reg, names, kind) {
+            Ok(s) => Ok((reg, s)),
+            Err(e) if e.to_string().starts_with("No formula or cask named") => {
+                self.ui.head("Not in the cached index — refreshing it");
+                self.update(true)?;
+                let reg = Registry::load(&self.paths)?;
+                let s = self.classify(&reg, names, kind)?;
+                Ok((reg, s))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Split names into formulae and casks according to the index.
@@ -395,8 +413,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             names,
         } => {
             ctx.adopt.set(*adopt);
-            let reg = ctx.registry()?;
-            let (formulae, casks) = ctx.classify(&reg, names, ctx.kind(kind))?;
+            let (reg, (formulae, casks)) = ctx.classify_fresh(names, ctx.kind(kind))?;
             if !formulae.is_empty() {
                 let popts = PlanOptions {
                     reinstall: *reinstall,
@@ -470,6 +487,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         paint::c(Hue::Orange, "uninstalled")
                     ));
                 }
+                ui.scene(crate::ui::Scene::Fade);
                 ui.cue(crate::ui::Cue::Removed);
             }
             for c in casks {
@@ -487,12 +505,12 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         String::new()
                     }
                 ));
+                ui.scene(crate::ui::Scene::Fade);
                 ui.cue(crate::ui::Cue::Removed);
             }
         }
         Command::Reinstall { kind, names } => {
-            let reg = ctx.registry()?;
-            let (formulae, casks) = ctx.classify(&reg, names, ctx.kind(kind))?;
+            let (reg, (formulae, casks)) = ctx.classify_fresh(names, ctx.kind(kind))?;
             if !formulae.is_empty() {
                 let plan = resolve::plan(
                     &reg,
@@ -650,6 +668,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                             },
                         )?;
                         print_summary(&ctx, &summary);
+                        ui.scene(crate::ui::Scene::Rise);
                         ui.cue(crate::ui::Cue::Upgraded);
                     }
                 }
@@ -1165,8 +1184,14 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             }
         }
         Command::Uses { name } => {
-            for d in receipt::dependents(&ctx.paths, name) {
-                println!("{d}");
+            let tty = console::Term::stdout().is_term();
+            for (i, d) in receipt::dependents(&ctx.paths, name).iter().enumerate() {
+                if tty {
+                    let hue = paint::DEPTH[i % paint::DEPTH.len()];
+                    println!("{} {}", paint::c(hue, "◂"), paint::formula(d));
+                } else {
+                    println!("{d}");
+                }
             }
         }
         Command::Leaves => {
@@ -1176,7 +1201,16 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                     .iter()
                     .any(|o| o.active && o.receipt.runtime_deps.contains(&i.receipt.name))
                 {
-                    println!("{}", i.receipt.name);
+                    if console::Term::stdout().is_term() {
+                        println!(
+                            "{} {} {}",
+                            paint::c(Hue::Green, "🌿"),
+                            paint::formula(&i.receipt.name),
+                            paint::version(&i.receipt.version)
+                        );
+                    } else {
+                        println!("{}", i.receipt.name);
+                    }
                 }
             }
         }
@@ -1371,25 +1405,41 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         let size = pour_core::store::tree_size(&dir);
                         total += size;
                         println!(
-                            "would remove store/{} ({}, {})",
-                            &sha[..12],
-                            meta.map(|m| format!("{} {}", m.name, m.version))
-                                .unwrap_or_else(|| "incomplete".into()),
-                            human_bytes(size)
+                            "{} store/{} ({}, {})",
+                            paint::c(Hue::Amber, "would remove"),
+                            paint::dim(&sha[..12]),
+                            meta.map(|m| format!(
+                                "{} {}",
+                                paint::formula(&m.name),
+                                paint::version(&m.version)
+                            ))
+                            .unwrap_or_else(|| paint::c(Hue::Red, "incomplete")),
+                            paint::b(Hue::Cyan, human_bytes(size))
                         );
                     }
                 }
                 ui.note(format!("{} reclaimable", human_bytes(total)));
             } else {
                 let freed = ctx.engine().cleanup(false)?;
+                ui.scene(crate::ui::Scene::Sweep);
                 ui.ok(format!("freed {}", paint::b(Hue::Gold, human_bytes(freed))));
                 ui.cue(crate::ui::Cue::Cleaned);
             }
         }
         Command::Tap { action } => match action {
             None | Some(TapAction::List) => {
+                let tty = console::Term::stdout().is_term();
                 for t in registry::taps(&ctx.paths) {
-                    println!("{}\t{}", t.name, t.url);
+                    if tty {
+                        println!(
+                            "{} {}  {}",
+                            paint::c(Hue::Sky, "⎇"),
+                            paint::tap(&t.name),
+                            paint::url(&t.url)
+                        );
+                    } else {
+                        println!("{}\t{}", t.name, t.url);
+                    }
                 }
             }
             Some(TapAction::Add { name, url }) => {
@@ -2658,7 +2708,9 @@ fn doctor(ctx: &Ctx) -> Result<()> {
         }
     }
     if problems == 0 {
+        ui.scene(crate::ui::Scene::Orbit);
         ui.ok("Your system is ready to pour.");
+        ui.cue(crate::ui::Cue::Found);
     } else {
         ui.println(format!(
             "{problems} thing{} to look at.",
