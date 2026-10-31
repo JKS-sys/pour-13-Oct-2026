@@ -442,6 +442,38 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         },
                     )?;
                     print_summary(&ctx, &summary);
+                    // A dependency this install upgraded (simdjson) takes its dependents along.
+                    let upgraded: Vec<String> = plan
+                        .steps
+                        .iter()
+                        .filter(|s| s.action == resolve::Action::Upgrade)
+                        .map(|s| s.formula.name.clone())
+                        .collect();
+                    let follow = resolve::dependents_to_upgrade(&reg, &ctx.paths, &upgraded);
+                    if !follow.is_empty() {
+                        ui.head(format!(
+                            "Upgrading what is built on it: {}",
+                            follow.join(", ")
+                        ));
+                        let plan2 = resolve::plan(
+                            &reg,
+                            &ctx.paths,
+                            &ctx.platform,
+                            &follow,
+                            &PlanOptions {
+                                upgrade: true,
+                                ..Default::default()
+                            },
+                        )?;
+                        let s2 = ctx.engine().install(
+                            &plan2,
+                            &Options {
+                                threads: *jobs,
+                                ..Default::default()
+                            },
+                        )?;
+                        print_summary(&ctx, &s2);
+                    }
                 }
             }
             ctx.install_casks(&reg, &casks, *force, *dry_run)?;
@@ -522,6 +554,18 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         ..Default::default()
                     },
                 )?;
+                // A reinstall is the way out of a damaged copy, so the named formulae's store
+                // entries are dropped and their bottles fetched and unpacked again.
+                for st in plan
+                    .steps
+                    .iter()
+                    .filter(|s| formulae.contains(&s.formula.name))
+                {
+                    let dir = pour_core::store::entry_dir(&ctx.paths.store(), &st.bottle.sha256);
+                    if dir.exists() {
+                        let _ = pour_core::store::remove_tree(&dir);
+                    }
+                }
                 print_plan(&ctx, &plan);
                 let summary = ctx.engine().install(
                     &plan,
@@ -623,6 +667,19 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                         .cloned()
                         .collect()
                 };
+                // Upgrading a library upgrades the installed formulae built on it (node with simdjson).
+                let mut targets = targets;
+                if !names.is_empty() {
+                    for d in resolve::dependents_to_upgrade(&reg, &ctx.paths, &targets) {
+                        if !targets.contains(&d) {
+                            ui.note(format!(
+                                "{} is built on what is being upgraded — upgrading it too",
+                                paint::formula(&d)
+                            ));
+                            targets.push(d);
+                        }
+                    }
+                }
                 if targets.is_empty() {
                     if names.is_empty() || k == Some(Kind::Formula) {
                         ui.ok("all formulae are up to date");

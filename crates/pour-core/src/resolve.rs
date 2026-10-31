@@ -289,6 +289,33 @@ pub fn plan(
 }
 
 /// Installed formulae whose index version differs from the installed one.
+/// Installed formulae that depend (directly or through other installed formulae) on one of
+/// `upgraded` and have a newer build in the index. Homebrew rebuilds dependents when a
+/// library changes (simdjson 4 → 5 rebuilt node, node@22 and node@24 as revision 2); a
+/// dependent left on its old build breaks — node then rejects every package.json
+/// ("Invalid package config"). So upgrading a library upgrades these too.
+pub fn dependents_to_upgrade(reg: &Registry, paths: &Paths, upgraded: &[String]) -> Vec<String> {
+    let outdated: Vec<String> = outdated(reg, paths)
+        .into_iter()
+        .map(|(i, _)| i.receipt.name)
+        .collect();
+    let mut seen: std::collections::HashSet<String> = upgraded.iter().cloned().collect();
+    let mut queue: Vec<String> = upgraded.to_vec();
+    let mut out = Vec::new();
+    while let Some(n) = queue.pop() {
+        for d in receipt::dependents(paths, &n) {
+            if seen.insert(d.clone()) {
+                if outdated.contains(&d) {
+                    out.push(d.clone());
+                }
+                queue.push(d);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn outdated(reg: &Registry, paths: &Paths) -> Vec<(receipt::Installed, Formula)> {
     let mut out = Vec::new();
     for i in receipt::installed_formulae(paths) {
