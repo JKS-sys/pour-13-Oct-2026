@@ -181,6 +181,10 @@ pub fn taps(paths: &Paths) -> Vec<Tap> {
         if !default_tap_here(n) {
             continue;
         }
+        // A default tap is off only when `pour tap remove` recorded it as OFF. Older Pour
+        // versions wrote an empty address, which some runs left behind without the user
+        // asking: those come back on.
+        list.retain(|t| !(t.name == *n && t.url.is_empty()));
         if !list.iter().any(|t| t.name == *n) {
             list.push(Tap {
                 name: n.to_string(),
@@ -188,9 +192,12 @@ pub fn taps(paths: &Paths) -> Vec<Tap> {
             });
         }
     }
-    list.retain(|t| !t.url.is_empty());
+    list.retain(|t| !t.url.is_empty() && t.url != TAP_OFF);
     list
 }
+
+/// The address `pour tap remove` records for a default tap the user switched off.
+pub const TAP_OFF: &str = "off";
 
 /// Remove a tap; a default tap is remembered as switched off (empty url).
 pub fn remove_tap(paths: &Paths, name: &str) -> std::io::Result<bool> {
@@ -204,7 +211,7 @@ pub fn remove_tap(paths: &Paths, name: &str) -> std::io::Result<bool> {
     if DEFAULT_TAPS.iter().any(|(n, _)| *n == name) {
         list.push(Tap {
             name: name.to_string(),
-            url: String::new(),
+            url: TAP_OFF.to_string(),
         });
     }
     save_taps(paths, &list)?;
@@ -795,6 +802,16 @@ mod tests {
         assert!(remove_tap(&paths, "jks-sys/pour-tools").unwrap());
         assert!(!taps(&paths).iter().any(|t| t.name == "jks-sys/pour-tools"));
         assert!(!remove_tap(&paths, "jks-sys/pour-tools").unwrap());
+        // an older Pour left an empty address: the default tap comes back
+        save_taps(
+            &paths,
+            &[Tap {
+                name: "jks-sys/pour-apps".into(),
+                url: String::new(),
+            }],
+        )
+        .unwrap();
+        assert!(taps(&paths).iter().any(|t| t.name == "jks-sys/pour-apps"));
     }
 
     #[test]
