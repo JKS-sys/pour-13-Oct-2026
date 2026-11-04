@@ -20,7 +20,7 @@ const STYLES: clap::builder::styling::Styles = {
         .usage(Style::new().bold().fg_color(c(43)))
         .literal(Style::new().bold().fg_color(c(39)))
         .placeholder(Style::new().fg_color(c(149)))
-        .error(Style::new().bold().fg_color(c(203)))
+        .error(Style::new().bold().fg_color(c(202)))
         .valid(Style::new().bold().fg_color(c(78)))
         .invalid(Style::new().bold().fg_color(c(214)))
 };

@@ -39,6 +39,10 @@ pub enum Cue {
     Registered,
     ServiceUp,
     ServiceDown,
+    Searched,
+    Healthy,
+    Bundled,
+    Linked,
 }
 
 /// The kinds of vector scene `Ui::scene` draws.
@@ -49,6 +53,10 @@ pub enum Scene {
     Rise,
     Fade,
     Orbit,
+    Radar,
+    Bubbles,
+    Rain,
+    Bridge,
 }
 
 pub fn arrow() -> String {
@@ -111,7 +119,7 @@ impl Ui {
                     "\x1b[38;5;39m█\x1b[0m",
                     "\x1b[38;5;75m▇\x1b[0m",
                     "\x1b[38;5;105m▆\x1b[0m",
-                    "\x1b[38;5;141m▅\x1b[0m",
+                    "\x1b[38;5;63m▅\x1b[0m",
                     "\x1b[38;5;179m▄\x1b[0m",
                     "",
                 ]),
@@ -300,6 +308,69 @@ impl Ui {
                     )
                 })
                 .collect(),
+            // a sweep line turns round a dial and lights the dots it passes: a search
+            Scene::Radar => (0..16)
+                .map(|k| {
+                    let arms = ["│", "╱", "─", "╲"];
+                    let dots: String = (0..12)
+                        .map(|i| {
+                            if (i + 16 - k) % 6 == 0 {
+                                paint::b(paint::DEPTH[i % paint::DEPTH.len()], "●")
+                            } else {
+                                paint::c(Hue::Slate, "·")
+                            }
+                        })
+                        .collect();
+                    format!("{} {dots}", paint::b(Hue::Emerald, arms[k % 4]))
+                })
+                .collect(),
+            // bubbles rise through a glass: details being read
+            Scene::Bubbles => (0..12)
+                .map(|k| {
+                    let b = ["∘", "○", "◯", "○", "∘", " "];
+                    (0..w)
+                        .map(|i| {
+                            paint::c(
+                                [Hue::Ice, Hue::Cyan, Hue::Mint, Hue::Sky][i % 4],
+                                b[(i * 3 + k) % b.len()],
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
+            // a shower of coloured drops falls into place: many packages at once
+            Scene::Rain => (0..12)
+                .map(|k| {
+                    let d = ["╷", "│", "╵", "·", " ", " "];
+                    (0..w)
+                        .map(|i| {
+                            paint::b(
+                                paint::DEPTH[(i + k) % paint::DEPTH.len()],
+                                d[(i * 5 + k) % d.len()],
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
+            // a bridge is laid plank by plank: links made, or a move from Homebrew
+            Scene::Bridge => (1..=w)
+                .map(|k| {
+                    let planks: String = (0..w)
+                        .map(|i| {
+                            if i < k {
+                                paint::b(paint::DEPTH[i % paint::DEPTH.len()], "▬")
+                            } else {
+                                paint::c(Hue::Slate, "┄")
+                            }
+                        })
+                        .collect();
+                    format!(
+                        "{}{planks}{}",
+                        paint::b(Hue::Gold, "◖"),
+                        paint::b(Hue::Teal, "◗")
+                    )
+                })
+                .collect(),
         };
         for f in &frames {
             self.multi.suspend(|| {
@@ -387,6 +458,10 @@ fn sound_for(c: Option<Cue>) -> (&'static str, &'static str, &'static str) {
         Some(Cue::Registered) => ("Submarine", "dialog-information", "Windows Notify Calendar"),
         Some(Cue::ServiceUp) => ("Ping", "service-login", "Windows Hardware Insert"),
         Some(Cue::ServiceDown) => ("Blow", "service-logout", "Windows Hardware Remove"),
+        Some(Cue::Searched) => ("Morse", "message", "Windows Navigation Start"),
+        Some(Cue::Healthy) => ("Funk", "complete", "Windows Notify Email"),
+        Some(Cue::Bundled) => ("Frog", "complete", "Windows Notify System Generic"),
+        Some(Cue::Linked) => ("Tink", "bell", "Windows Ding"),
         None => ("Basso", "dialog-error", "Windows Critical Stop"),
     }
 }

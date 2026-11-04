@@ -23,6 +23,10 @@ pub enum Hue {
     Blue,
     Indigo,
     Violet,
+    Mint,
+    Ice,
+    Sand,
+    Emerald,
     Slate,
 }
 
@@ -33,7 +37,7 @@ impl Hue {
             Hue::Gold => ((232, 181, 58), 179),
             Hue::Amber => ((245, 158, 11), 214),
             Hue::Orange => ((251, 146, 60), 209),
-            Hue::Red => ((248, 113, 113), 203),
+            Hue::Red => ((239, 68, 38), 202), // red-orange: a pale red reads as pink
             Hue::Lime => ((163, 230, 53), 149),
             Hue::Green => ((74, 222, 128), 78),
             Hue::Teal => ((45, 212, 191), 43),
@@ -41,7 +45,11 @@ impl Hue {
             Hue::Sky => ((56, 189, 248), 39),
             Hue::Blue => ((96, 165, 250), 75),
             Hue::Indigo => ((129, 140, 248), 105),
-            Hue::Violet => ((167, 139, 250), 141),
+            Hue::Violet => ((112, 104, 245), 63), // deep blue-violet, well away from lavender/pink
+            Hue::Mint => ((110, 231, 183), 115),
+            Hue::Ice => ((165, 243, 252), 159),
+            Hue::Sand => ((214, 188, 130), 180),
+            Hue::Emerald => ((16, 185, 129), 36),
             Hue::Slate => ((148, 163, 184), 247),
         }
     }
@@ -73,7 +81,7 @@ impl Hue {
 }
 
 #[cfg(test)]
-pub const ALL: [Hue; 13] = [
+pub const ALL: [Hue; 17] = [
     Hue::Gold,
     Hue::Amber,
     Hue::Orange,
@@ -87,16 +95,24 @@ pub const ALL: [Hue; 13] = [
     Hue::Indigo,
     Hue::Violet,
     Hue::Slate,
+    Hue::Mint,
+    Hue::Ice,
+    Hue::Sand,
+    Hue::Emerald,
 ];
 
 /// Brackets and nesting levels, outermost first.
-pub const DEPTH: [Hue; 6] = [
+pub const DEPTH: [Hue; 10] = [
     Hue::Gold,
     Hue::Cyan,
     Hue::Lime,
     Hue::Violet,
     Hue::Orange,
     Hue::Sky,
+    Hue::Mint,
+    Hue::Amber,
+    Hue::Teal,
+    Hue::Blue,
 ];
 
 /// Colours for CI logs that are not terminals: GitHub Actions, GitLab CI,
@@ -181,7 +197,13 @@ pub fn number(n: impl std::fmt::Display) -> String {
     c(Hue::Cyan, n.to_string())
 }
 pub fn path(p: &str) -> String {
-    c(Hue::Sky, p)
+    // the folders in Sand, the file name in Sky: the part that matters stands out
+    match p.rfind('/') {
+        Some(i) if i + 1 < p.len() => {
+            format!("{}{}", c(Hue::Sand, &p[..=i]), c(Hue::Sky, &p[i + 1..]))
+        }
+        _ => c(Hue::Sky, p),
+    }
 }
 pub fn url(u: &str) -> String {
     c(Hue::Blue, u)
@@ -209,7 +231,11 @@ pub fn heading(label: &str, i: usize) -> String {
         Hue::Green,
         Hue::Indigo,
         Hue::Amber,
-    ][i % 10];
+        Hue::Mint,
+        Hue::Sand,
+        Hue::Emerald,
+        Hue::Ice,
+    ][i % 14];
     format!("{} {}", b(h, "==>"), b(h, label))
 }
 
@@ -331,7 +357,48 @@ mod tests {
                 !(280.0..=350.0).contains(&d),
                 "{h:?} is {d:.0}° — pink/magenta is not allowed"
             );
+            // the 256-colour fallback many terminals use must pass too
+            let ((r, g, b), x) = h.rgb();
+            let _ = (r, g, b);
+            let (xr, xg, xb) = xterm_rgb(x);
+            let xd = hue_of(xr, xg, xb);
+            let sat = (xr.max(xg).max(xb) - xr.min(xg).min(xb)) as f64;
+            assert!(
+                sat < 20.0 || !(270.0..=355.0).contains(&xd),
+                "{h:?} falls back to xterm {x} at {xd:.0}° — pink/magenta is not allowed"
+            );
         }
+    }
+
+    fn xterm_rgb(i: u8) -> (u8, u8, u8) {
+        if i >= 232 {
+            let v = 8 + (i - 232) * 10;
+            return (v, v, v);
+        }
+        if i < 16 {
+            return (128, 128, 128);
+        }
+        let i = i - 16;
+        let l = |n: u8| if n == 0 { 0 } else { 55 + n * 40 };
+        (l(i / 36), l((i / 6) % 6), l(i % 6))
+    }
+
+    fn hue_of(r: u8, g: u8, b: u8) -> f64 {
+        let (r, g, b) = (r as f64, g as f64, b as f64);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let d = max - min;
+        if d == 0.0 {
+            return 0.0;
+        }
+        let h = if max == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+        h * 60.0
     }
 
     #[test]

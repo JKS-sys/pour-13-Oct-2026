@@ -806,6 +806,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             }
         }
         Command::Search { kind, limit, query } => {
+            ui.scene(crate::ui::Scene::Radar);
+            ui.cue(crate::ui::Cue::Searched);
             let reg = ctx.registry()?;
             let t = std::time::Instant::now();
             let q = query.join(" ");
@@ -917,6 +919,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             ));
         }
         Command::Info { kind, names } => {
+            ui.scene(crate::ui::Scene::Bubbles);
             let reg = ctx.registry()?;
             let mut out = Vec::new();
             for n in names {
@@ -1111,6 +1114,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             }
         }
         Command::Link { overwrite, names } => {
+            ui.scene(crate::ui::Scene::Bridge);
+            ui.cue(crate::ui::Cue::Linked);
             for n in names {
                 let i = receipt::find_formula(&ctx.paths, n)
                     .ok_or_else(|| err(format!("{n} is not installed")))?;
@@ -1527,6 +1532,8 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 let text =
                     std::fs::read_to_string(&file).map_err(|e| err(format!("{file}: {e}")))?;
                 let (brews, casks, taps) = parse_brewfile(&text);
+                ui.scene(crate::ui::Scene::Rain);
+                ui.cue(crate::ui::Cue::Bundled);
                 for (name, url) in taps {
                     if let Some(u) = url {
                         let mut list = registry::taps(&ctx.paths);
@@ -1597,6 +1604,7 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
             }
         },
         Command::Migrate { dry_run } => {
+            ui.scene(crate::ui::Scene::Bridge);
             // Read Homebrew's Cellar and Caskroom directly: works without `brew` on PATH
             // (Keel, cron, a shell that never loaded brew shellenv).
             let (bf, bc) = pour_core::homebrew::installed(&ctx.paths.prefix);
@@ -2767,7 +2775,7 @@ fn doctor(ctx: &Ctx) -> Result<()> {
     if problems == 0 {
         ui.scene(crate::ui::Scene::Orbit);
         ui.ok("Your system is ready to pour.");
-        ui.cue(crate::ui::Cue::Found);
+        ui.cue(crate::ui::Cue::Healthy);
     } else {
         ui.println(format!(
             "{problems} thing{} to look at.",
