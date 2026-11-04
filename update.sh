@@ -26,10 +26,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 . scripts/env.sh; load_env .env 2>/dev/null || true
-# No .env? The keys come from the dashboard vault (pour + shared) with this Mac's own read-only
-# token — approve the Mac once with: curl -fsSL https://ipconfig.co.network/vault/login.sh | bash
-if [ ! -f .env ] && [ "$(uname)" = Darwin ]; then
-  VAULT_TOKEN="$(security find-generic-password -s ipconfig-vault -w 2>/dev/null || true)"
+# The keys come from the dashboard vault (pour + shared). Without gh: approve the Mac once with
+#   curl -fsSL https://ipconfig.co.network/vault/login.sh | bash
+# No .env? Your GitHub sign-in (gh auth login as JKS-sys) opens the vault; else this Mac's
+# approved token from the keychain.
+if [ ! -f .env ]; then
+  VAULT_TOKEN="$(gh auth token 2>/dev/null || true)"
+  [ -z "$VAULT_TOKEN" ] && [ "$(uname)" = Darwin ] && VAULT_TOKEN="$(security find-generic-password -s ipconfig-vault -w 2>/dev/null || true)"
   if [ -n "$VAULT_TOKEN" ]; then
     VAULT_TMP="$(mktemp "${TMPDIR:-/tmp}/pour-vault.XXXXXX")"; chmod 600 "$VAULT_TMP"
     if curl -fsS -H "Authorization: Bearer $VAULT_TOKEN" \
