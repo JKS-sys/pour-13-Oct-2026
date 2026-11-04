@@ -26,6 +26,21 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 . scripts/env.sh; load_env .env 2>/dev/null || true
+# No .env? The keys come from the dashboard vault (pour + shared) with this Mac's own read-only
+# token — approve the Mac once with: curl -fsSL https://ipconfig.co.network/vault/login.sh | bash
+if [ ! -f .env ] && [ "$(uname)" = Darwin ]; then
+  VAULT_TOKEN="$(security find-generic-password -s ipconfig-vault -w 2>/dev/null || true)"
+  if [ -n "$VAULT_TOKEN" ]; then
+    VAULT_TMP="$(mktemp "${TMPDIR:-/tmp}/pour-vault.XXXXXX")"; chmod 600 "$VAULT_TMP"
+    if curl -fsS -H "Authorization: Bearer $VAULT_TOKEN" \
+        "https://ipconfig.co.network/api/v1/owner/vault/pour/export?format=env&shared=1" -o "$VAULT_TMP"; then
+      load_env "$VAULT_TMP" && echo "==> keys from the dashboard vault (pour + shared)"
+    else
+      echo "Warning: the dashboard vault did not answer — continuing with what this shell has" >&2
+    fi
+    rm -f "$VAULT_TMP"; unset VAULT_TOKEN VAULT_TMP
+  fi
+fi
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 PUBLISH=1; TESTS=1; VERSION=""; ONLY=""
