@@ -403,9 +403,18 @@ fn run_step(ctx: &Ctx, ty: &str, step: &Value) -> Result<Option<String>, String>
             let src = ctx
                 .path(step.get("source").unwrap_or(&Value::Null))
                 .ok_or("no source")?;
-            let dst = ctx
+            let mut dst = ctx
                 .path(step.get("target").unwrap_or(&Value::Null))
                 .ok_or("no target")?;
+            // Ruby's cp_r / mv into an existing directory puts the source INSIDE it: node's
+            // `cp_r libexec/"lib/node_modules/npm", HOMEBREW_PREFIX/"lib/node_modules"` makes
+            // lib/node_modules/npm. Treating the existing directory as "already there" skipped
+            // the copy and left bin/npm pointing at nothing.
+            if dst.is_dir() && !dst.is_symlink() {
+                if let Some(name) = src.file_name() {
+                    dst = dst.join(name);
+                }
+            }
             let overwrite = step
                 .get("overwrite")
                 .and_then(|v| v.as_bool())
@@ -864,6 +873,31 @@ mod tests {
                 ish: false,
             },
         )
+    }
+
+    #[test]
+    fn copy_into_an_existing_directory_lands_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (paths, platform) = ctx(dir.path());
+        let keg = paths.keg("node", "26.13.0_2");
+        std::fs::create_dir_all(keg.join("libexec/lib/node_modules/npm/bin")).unwrap();
+        std::fs::write(keg.join("libexec/lib/node_modules/npm/bin/npm-cli.js"), "x").unwrap();
+        std::fs::create_dir_all(paths.prefix.join("lib/node_modules")).unwrap();
+        let c = Ctx {
+            paths: &paths,
+            platform: &platform,
+            name: "node".into(),
+            version: "26.13.0_2".into(),
+            keg,
+        };
+        let step = serde_json::json!({"type": "copy", "recursive": true,
+            "source": {"path": "{{libexec}}/lib/node_modules/npm"},
+            "target": {"path": "{{HOMEBREW_PREFIX}}/lib/node_modules"}});
+        run_step(&c, "copy", &step).unwrap();
+        assert!(paths
+            .prefix
+            .join("lib/node_modules/npm/bin/npm-cli.js")
+            .is_file());
     }
 
     #[test]

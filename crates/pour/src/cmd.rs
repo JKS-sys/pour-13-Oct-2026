@@ -2676,6 +2676,45 @@ fn doctor(ctx: &Ctx) -> Result<()> {
         problems += 1;
         ui.warn("prefix is longer than /opt/homebrew: Mach-O relocation needs a prefix of 13 characters or fewer");
     }
+    // Commands in the prefix that lead nowhere (node's bin/npm re-pointed at a missing
+    // lib/node_modules/npm on the Mac Studio): name the formula and the way back.
+    if let Ok(rd) = std::fs::read_dir(ctx.paths.bin()) {
+        let mut broken: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_symlink() && !p.exists() {
+                let owner = std::fs::read_link(&p)
+                    .ok()
+                    .and_then(|t| {
+                        let t = t.to_string_lossy().into_owned();
+                        t.split("/Cellar/")
+                            .nth(1)
+                            .map(|r| r.split('/').next().unwrap_or("").to_string())
+                    })
+                    .unwrap_or_default();
+                broken
+                    .entry(owner)
+                    .or_default()
+                    .push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+        for (owner, cmds) in &broken {
+            problems += 1;
+            if owner.is_empty() {
+                ui.warn(format!(
+                    "{} in {} lead nowhere — remove them",
+                    cmds.join(", "),
+                    ctx.paths.bin().display()
+                ));
+            } else {
+                ui.warn(format!(
+                    "{} from {} lead nowhere — fix with: pour reinstall {owner}",
+                    cmds.join(", "),
+                    paint::formula(owner)
+                ));
+            }
+        }
+    }
     let on_path = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d == ctx.paths.bin()))
         .unwrap_or(false);
