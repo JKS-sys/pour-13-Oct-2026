@@ -3,26 +3,14 @@
 #   bash scripts/push-github.sh [repo-name]          (default: $GH_REPO, else the name below)
 # A fresh zip has no .git — this fetches the repo's newest commit first (depth 1), puts HEAD on it
 # with `reset --soft` (the files here stay exactly as they are), commits, and pushes a fast-forward.
-# Needs GH_TOKEN (from .env / .env.local, one folder up, or ~/.ipconfig.env). SKIP_PUSH=1 skips.
+# Needs GH_TOKEN (from the ipconfig dashboard vault). SKIP_PUSH=1 skips.
 # The commit is by the owner's git identity only.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "${SKIP_PUSH:-0}" = "1" ] && { echo "· push skipped (SKIP_PUSH=1)"; exit 0; }
-load_env() {
-  local file="$1" line key val
-  [ -f "$file" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-    key="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
-    if [[ "$val" =~ ^\"(.*)\"$ ]] || [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
-    [ -z "${!key:-}" ] && export "$key=$val"
-  done < "$file"
-}
-for f in ./.env ./.env.local ../.env.local ../.env "$HOME/.ipconfig.env"; do load_env "$f"; done
+. "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/env.sh"; load_vault pour || true
 GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-[ -n "$GH_TOKEN" ] || { echo "✗ GH_TOKEN is not set (.env / .env.local) — nothing pushed"; exit 1; }
+[ -n "$GH_TOKEN" ] || { echo "✗ GH_TOKEN is not set (put it in the dashboard vault, then gh auth login) — nothing pushed"; exit 1; }
 OWNER="${GH_OWNER:-JKS-sys}"
 NAME="${1:-${GH_REPO:-pour-13-Oct-2026}}"
 AUTH="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"

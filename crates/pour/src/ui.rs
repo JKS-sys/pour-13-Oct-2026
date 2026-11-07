@@ -43,6 +43,17 @@ pub enum Cue {
     Healthy,
     Bundled,
     Linked,
+    Failed,
+}
+
+/// What a log box carries; picks its colour, badge and sound.
+#[derive(Clone, Copy, Debug)]
+pub enum BoxKind {
+    Info,
+    Note,
+    Warn,
+    Error,
+    Ok,
 }
 
 /// The kinds of vector scene `Ui::scene` draws.
@@ -57,6 +68,7 @@ pub enum Scene {
     Bubbles,
     Rain,
     Bridge,
+    Shatter,
 }
 
 pub fn arrow() -> String {
@@ -174,6 +186,107 @@ impl Ui {
             gold(&"─".repeat(w)),
             gold("╯")
         ));
+    }
+
+    /// A framed log box: a drawn badge and border in the colour of its kind, numbered lines,
+    /// each line highlighted (brackets by depth, paths, versions, commands, KEY=value), long
+    /// lines wrapped. The border draws itself in on a terminal; plain text in pipes.
+    pub fn logbox(&self, kind: BoxKind, title: &str, lines: &[String]) {
+        if self.quiet || self.json || lines.is_empty() {
+            return;
+        }
+        let tty = Term::stdout().is_term();
+        let (hue, badge) = match kind {
+            BoxKind::Info => (Hue::Teal, "◆"),
+            BoxKind::Note => (Hue::Sky, "●"),
+            BoxKind::Warn => (Hue::Amber, "▲"),
+            BoxKind::Error => (Hue::Red, "✖"),
+            BoxKind::Ok => (Hue::Green, "✔"),
+        };
+        if !tty {
+            self.println(format!("{badge} {title}"));
+            for l in lines {
+                self.println(format!("  {l}"));
+            }
+            return;
+        }
+        let max = 92usize;
+        // wrap on spaces so nothing runs off the frame
+        let mut rows: Vec<String> = Vec::new();
+        for l in lines.iter().flat_map(|l| l.split('\n')) {
+            let mut cur = String::new();
+            for w in l.split(' ') {
+                if console::measure_text_width(&cur) + w.len() + 1 > max && !cur.is_empty() {
+                    rows.push(std::mem::take(&mut cur));
+                    cur.push_str("  ");
+                }
+                if !cur.is_empty() && !cur.ends_with("  ") {
+                    cur.push(' ');
+                }
+                cur.push_str(w);
+            }
+            rows.push(cur);
+        }
+        let nw = rows.len().to_string().len();
+        let w = rows
+            .iter()
+            .map(|r| console::measure_text_width(r))
+            .chain(std::iter::once(console::measure_text_width(title) + 4))
+            .max()
+            .unwrap_or(20)
+            .min(max)
+            + nw
+            + 4;
+        let edge = |t: &str| paint::c(hue, t);
+        let top = format!(
+            "{}{} {} {} {}{}",
+            edge("╭"),
+            edge("─"),
+            paint::b(hue, badge),
+            paint::b(hue, title),
+            edge(&"─".repeat(w.saturating_sub(console::measure_text_width(title) + 5))),
+            edge("╮")
+        );
+        // the top edge draws itself in, left to right
+        if std::env::var_os("CI").is_none() && !reduced_motion() {
+            use std::io::Write;
+            let steps = 8;
+            for k in 1..=steps {
+                let n = w * k / steps;
+                self.multi.suspend(|| {
+                    print!("\r{}{}", edge("╭"), edge(&"─".repeat(n)));
+                    let _ = std::io::stdout().flush();
+                });
+                std::thread::sleep(Duration::from_millis(14));
+            }
+            self.multi.suspend(|| {
+                print!("\r\x1b[2K");
+                let _ = std::io::stdout().flush();
+            });
+        }
+        self.println(top);
+        for (i, r) in rows.iter().enumerate() {
+            let num = paint::c(Hue::Slate, format!("{:>nw$}", i + 1));
+            let body = paint::syntax(r);
+            let pad = w.saturating_sub(console::measure_text_width(r) + nw + 3);
+            self.println(format!(
+                "{} {num} {} {body}{}{}",
+                edge("│"),
+                paint::c(hue, "┊"),
+                " ".repeat(pad),
+                edge("│")
+            ));
+        }
+        self.println(format!(
+            "{}{}{}",
+            edge("╰"),
+            edge(&"─".repeat(w)),
+            edge("╯")
+        ));
+        if matches!(kind, BoxKind::Error) {
+            self.scene(Scene::Shatter);
+            self.cue(Cue::Failed);
+        }
     }
 
     /// Choose the closing sound for a successful command.
@@ -371,6 +484,24 @@ impl Ui {
                     )
                 })
                 .collect(),
+            // a bar cracks and its pieces fall away: something went wrong
+            Scene::Shatter => (0..8)
+                .map(|k| {
+                    let g = ["█", "▙", "▚", "▞", "╱", "╲", "·", " "][k];
+                    (0..w)
+                        .map(|i| {
+                            paint::b(
+                                [Hue::Red, Hue::Orange, Hue::Amber][(i + k) % 3],
+                                if (i * 7 + k) % 3 == 0 {
+                                    g
+                                } else {
+                                    ["▓", "▒", "░", "·", " ", " ", " ", " "][k]
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
         };
         for f in &frames {
             self.multi.suspend(|| {
@@ -462,6 +593,7 @@ fn sound_for(c: Option<Cue>) -> (&'static str, &'static str, &'static str) {
         Some(Cue::Healthy) => ("Funk", "complete", "Windows Notify Email"),
         Some(Cue::Bundled) => ("Frog", "complete", "Windows Notify System Generic"),
         Some(Cue::Linked) => ("Tink", "bell", "Windows Ding"),
+        Some(Cue::Failed) => ("Basso", "dialog-error", "Windows Critical Stop"),
         None => ("Basso", "dialog-error", "Windows Critical Stop"),
     }
 }

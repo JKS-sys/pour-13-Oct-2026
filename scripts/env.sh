@@ -1,47 +1,56 @@
 # shellcheck shell=bash
-# Read .env as data, never as shell code.
+# Keys come from the ipconfig dashboard vault — never from a .env file in the repository.
 #
-#   . scripts/env.sh && load_env
+#   . scripts/env.sh && load_vault pour
 #
-# `. ./.env` runs every line as a command, so a value with a space in it
-# (MAC_SIGN_IDENTITY=JKS-sys App Self-Signed) ran "App" and stopped
-# update.sh. This reads KEY=VALUE lines, strips one pair of surrounding
-# quotes, and exports them — whatever the value contains. Works in macOS's
-# bash 3.2.
-load_env() {
-  local file="${1:-.env}" line key val
-  [ -f "$file" ] || return 0
+# Opens the vault with your GitHub sign-in (gh auth login as JKS-sys), else this Mac's approved
+# read-only token in the keychain (curl -fsSL https://ipconfig.co.network/vault/login.sh | bash).
+# The export is read as data (KEY=VALUE lines, never `source`d) from a 0600 temp file that is
+# deleted at once. Keys already in the environment win, so CI secrets still work.
+VAULT_URL="${VAULT_URL:-https://ipconfig.co.network/api/v1/owner/vault}"
+
+_read_kv() { # file → export KEY=VALUE lines not already set
+  local line key val
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-    key="${BASH_REMATCH[2]}"
-    val="${BASH_REMATCH[3]}"
+    key="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
     if [[ "$val" =~ ^\"(.*)\"$ ]] || [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
-    export "$key=$val"
-  done < "$file"
-  # Plan ids may be named by price (RZP_20_MONTHLY, RZP_220_YEARLY) or by
-  # period (RZP_PLAN_MONTHLY, RZP_PLAN_YEARLY). Either name fills the other.
+    [ -n "${!key:-}" ] || export "$key=$val"
+  done < "$1"
+}
+
+vault_token() {
+  local t
+  t="$(gh auth token 2>/dev/null || true)"
+  [ -z "$t" ] && [ "$(uname)" = Darwin ] && t="$(security find-generic-password -s ipconfig-vault -w 2>/dev/null || true)"
+  printf '%s' "$t"
+}
+
+load_vault() { # app name (default pour); returns 1 when the vault could not be read
+  local app="${1:-pour}" tok tmp rc=1
+  # keys already here (CI secrets, an exported shell): nothing to fetch
+  if [ -n "${GH_TOKEN:-}" ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then return 0; fi
+  tok="$(vault_token)"
+  if [ -z "$tok" ]; then
+    echo "Warning: no way into the vault — run: gh auth login   (or approve this Mac: curl -fsSL https://ipconfig.co.network/vault/login.sh | bash)" >&2
+    return 1
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/vault.XXXXXX")"; chmod 600 "$tmp"
+  if curl -fsS -H "Authorization: Bearer $tok" "$VAULT_URL/$app/export?format=env&shared=1" -o "$tmp"; then
+    _read_kv "$tmp"; rc=0
+    echo "==> keys from the dashboard vault ($app + shared)"
+  else
+    echo "Warning: the dashboard vault did not answer for $app" >&2
+  fi
+  rm -f "$tmp"
+  return $rc
+}
+
+# Plan ids may be named by price or by period; either name fills the other.
+rzp_aliases() {
   : "${RZP_PLAN_MONTHLY:=${RZP_20_MONTHLY:-}}" "${RZP_PLAN_YEARLY:=${RZP_220_YEARLY:-}}"
   : "${RZP_20_MONTHLY:=${RZP_PLAN_MONTHLY:-}}" "${RZP_220_YEARLY:=${RZP_PLAN_YEARLY:-}}"
   export RZP_PLAN_MONTHLY RZP_PLAN_YEARLY RZP_20_MONTHLY RZP_220_YEARLY
-}
-
-# Write KEY="VALUE" once (quoted, so even a plain `source` would be safe).
-keep_env() {
-  local file="${3:-.env}"
-  grep -q "^$1=" "$file" 2>/dev/null && return 0
-  # A file whose last line has no newline would swallow the new key.
-  if [ -s "$file" ] && [ -n "$(tail -c1 "$file")" ]; then printf '\n' >> "$file"; fi
-  printf '%s="%s"\n' "$1" "$2" >> "$file"
-}
-
-# Write KEY="VALUE", replacing an existing (possibly empty) line.
-set_env() {
-  local file="${3:-.env}" tmp
-  tmp=$(mktemp)
-  if [ -f "$file" ]; then grep -v "^$1=" "$file" > "$tmp" || true; fi
-  if [ -s "$tmp" ] && [ -n "$(tail -c1 "$tmp")" ]; then printf '\n' >> "$tmp"; fi
-  printf '%s="%s"\n' "$1" "$2" >> "$tmp"
-  cat "$tmp" > "$file"; rm -f "$tmp"
 }

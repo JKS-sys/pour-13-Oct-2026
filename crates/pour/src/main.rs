@@ -219,6 +219,17 @@ pub enum Command {
     },
     /// Installed formulae nothing else depends on
     Leaves,
+    /// Why a formula is installed: the chain from what you asked for down to it
+    Why {
+        /// Installed formula
+        name: String,
+    },
+    /// Disk space each installed formula takes, largest first, with a bar for each
+    Size {
+        /// Show only the largest N
+        #[arg(short = 'n', long, default_value_t = 25)]
+        top: usize,
+    },
     /// Every app made at ipconfig.co.network, including apps the dashboard has just added
     Apps,
     /// Register an app (`pour install --cask NAME`) or a command-line tool (`pour install NAME`):
@@ -433,7 +444,17 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            ui.error(e.to_string());
+            let msg = e.to_string();
+            if msg.lines().count() > 2 {
+                // a long failure (a build or post-install log): headline, then the log in a box
+                let mut it = msg.lines();
+                let head = it.next().unwrap_or("").to_string();
+                let rest: Vec<String> = it.map(str::to_string).collect();
+                ui.error(&head);
+                ui.logbox(ui::BoxKind::Error, "what it said", &rest);
+            } else {
+                ui.error(msg);
+            }
             ui.chime_end(false);
             ExitCode::FAILURE
         }

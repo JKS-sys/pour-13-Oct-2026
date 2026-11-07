@@ -421,3 +421,115 @@ mod tests {
         assert_eq!(n, 3);
     }
 }
+
+/// Colour one line of log or code text for quick reading: brackets by depth, quoted text
+/// lime, numbers cyan, paths two-tone, URLs blue, `KEY=` gold, commands teal, flags sky,
+/// comments dim. Plain when colour is off. No pink anywhere.
+pub fn syntax(line: &str) -> String {
+    if !console::colors_enabled() {
+        return line.to_string();
+    }
+    // a whole-line comment
+    let t = line.trim_start();
+    if t.starts_with('#') || t.starts_with("//") {
+        return dim(line);
+    }
+    let mut out = String::new();
+    let mut depth = 0usize;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let word_end = |from: usize| {
+        let mut j = from;
+        while j < chars.len() && !chars[j].is_whitespace() && !"()[]{}<>\"'`,;".contains(chars[j]) {
+            j += 1;
+        }
+        j
+    };
+    while i < chars.len() {
+        let ch = chars[i];
+        match ch {
+            '(' | '[' | '{' | '<' => {
+                out.push_str(&b(DEPTH[depth % DEPTH.len()], ch.to_string()));
+                depth += 1;
+                i += 1;
+            }
+            ')' | ']' | '}' | '>' => {
+                depth = depth.saturating_sub(1);
+                out.push_str(&b(DEPTH[depth % DEPTH.len()], ch.to_string()));
+                i += 1;
+            }
+            '"' | '\'' | '`' => {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != ch {
+                    j += 1;
+                }
+                let end = (j + 1).min(chars.len());
+                out.push_str(&c(Hue::Lime, chars[i..end].iter().collect::<String>()));
+                i = end;
+            }
+            c0 if c0.is_whitespace() => {
+                out.push(c0);
+                i += 1;
+            }
+            _ => {
+                let j = word_end(i).max(i + 1);
+                let w: String = chars[i..j].iter().collect();
+                let first = out.trim().is_empty() || out.ends_with("$ ");
+                let painted = if w.starts_with("http://") || w.starts_with("https://") {
+                    url(&w)
+                } else if w.starts_with('/') || w.starts_with("~/") || w.starts_with("./") {
+                    path(&w)
+                } else if w.starts_with("--") || (w.starts_with('-') && w.len() <= 3 && w.len() > 1)
+                {
+                    c(Hue::Sky, &w)
+                } else if let Some((k, v)) = w.split_once('=') {
+                    if k.chars()
+                        .all(|x| x.is_ascii_uppercase() || x == '_' || x.is_ascii_digit())
+                        && !k.is_empty()
+                    {
+                        format!("{}{}{}", b(Hue::Gold, k), dim("="), c(Hue::Lime, v))
+                    } else {
+                        w.clone()
+                    }
+                } else if w.chars().next().is_some_and(|x| x.is_ascii_digit())
+                    && w.chars()
+                        .all(|x| x.is_ascii_digit() || ".,_%xkKMGBms".contains(x))
+                {
+                    c(Hue::Cyan, &w)
+                } else if first
+                    && matches!(
+                        w.as_str(),
+                        "pour"
+                            | "brew"
+                            | "sudo"
+                            | "export"
+                            | "echo"
+                            | "cd"
+                            | "ln"
+                            | "rm"
+                            | "mkdir"
+                            | "launchctl"
+                            | "systemctl"
+                    )
+                {
+                    b(Hue::Teal, &w)
+                } else if matches!(
+                    w.to_ascii_lowercase().trim_end_matches(':'),
+                    "error" | "failed" | "fatal"
+                ) {
+                    b(Hue::Red, &w)
+                } else if matches!(
+                    w.to_ascii_lowercase().trim_end_matches(':'),
+                    "warning" | "warn" | "note"
+                ) {
+                    b(Hue::Amber, &w)
+                } else {
+                    w.clone()
+                };
+                out.push_str(&painted);
+                i = j;
+            }
+        }
+    }
+    out
+}

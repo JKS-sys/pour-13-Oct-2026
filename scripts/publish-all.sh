@@ -17,7 +17,7 @@
 #   5. sets description, website and topics on every repository
 #   7. starts the first registry and apps sync runs
 #
-# Needs: git, gh, curl, python3. Credentials come from pour/.env (gitignored):
+# Needs: git, gh, curl, python3. Credentials come from the ipconfig dashboard vault:
 # GH_TOKEN (repo + workflow scopes), CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 #
 # Copyright (c) 2026 Jagadeesh Kumar S. All rights reserved.
@@ -46,23 +46,9 @@ GIT_NAME=$(git config --global user.name || true); GIT_MAIL=$(git config --globa
 [ -n "$GIT_NAME" ] && [ -n "$GIT_MAIL" ] || die "set your git identity first: git config --global user.name 'Your Name'; git config --global user.email you@example.com"
 case "$GIT_NAME$GIT_MAIL" in *[Cc]laude*|*[Aa]nthropic*) die "git identity must be yours, not an assistant's";; esac
 
-# .env is read as data (KEY=VALUE lines), never sourced. Looked for next to
-# this script, in pour/, and in the current folder.
-load_env() {
-  local file="$1" line key val
-  [ -f "$file" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-    key="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
-    if [[ "$val" =~ ^\"(.*)\"$ ]] || [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
-    export "$key=$val"
-  done < "$file"
-}
-for f in "$HERE/.env" "$HERE/ship.env" "$ROOT/.env" "$ROOT/ship.env" "$ROOT/pour/.env" "$PWD/.env"; do load_env "$f"; done
+. "$ROOT/pour/scripts/env.sh"; load_vault pour || true
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-[ -n "$GH_TOKEN" ] || die "GH_TOKEN missing: copy your ship.env next to this script as .env (or into pour/.env)"
+[ -n "$GH_TOKEN" ] || die "GH_TOKEN missing: put it in the dashboard vault (pour or shared), then sign in with gh auth login"
 gh auth status >/dev/null 2>&1 || warn "gh auth status failed; continuing with GH_TOKEN"
 VERSION=$(tr -d '[:space:]' < pour/VERSION)
 for r in "${REPOS[@]}"; do [ -d "$r" ] || die "$r/ is missing next to pour/ (unzip $r.zip into a folder named $r)"; done
@@ -137,7 +123,7 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; th
     printf '%s' "$CLOUDFLARE_API_TOKEN" | gh secret set CLOUDFLARE_API_TOKEN -R "$OWNER/$r$SUFFIX" >/dev/null 2>&1 &&
     printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | gh secret set CLOUDFLARE_ACCOUNT_ID -R "$OWNER/$r$SUFFIX" >/dev/null 2>&1 && ok "$r: Cloudflare secrets set" || warn "$r: could not set secrets"
   done
-else warn "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not in .env - the sync workflows will publish to GitHub only"; fi
+else warn "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not in the vault - the sync workflows will publish to GitHub only"; fi
 
 # 5. Details
 say "descriptions, websites, topics"

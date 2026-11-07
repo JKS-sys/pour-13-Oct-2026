@@ -1276,6 +1276,113 @@ pub fn run(cli: &Cli, ui: &Ui) -> Result<()> {
                 }
             }
         }
+        Command::Why { name } => {
+            ui.scene(crate::ui::Scene::Radar);
+            let all: Vec<_> = receipt::installed_formulae(&ctx.paths)
+                .into_iter()
+                .filter(|i| i.active)
+                .collect();
+            let me = all
+                .iter()
+                .find(|i| i.receipt.name == *name)
+                .ok_or_else(|| err(format!("{name} is not installed")))?;
+            if me.receipt.installed_on_request {
+                ui.ok(format!(
+                    "{} was installed because you asked for it",
+                    paint::formula(name)
+                ));
+            }
+            // walk up through dependents to formulae installed on request
+            let mut chains: Vec<Vec<String>> = Vec::new();
+            let mut stack: Vec<Vec<String>> = vec![vec![name.clone()]];
+            while let Some(chain) = stack.pop() {
+                let last = chain.last().unwrap().clone();
+                let parents: Vec<&_> = all
+                    .iter()
+                    .filter(|o| o.receipt.runtime_deps.contains(&last))
+                    .collect();
+                for p in parents {
+                    if chain.contains(&p.receipt.name) || chain.len() > 12 {
+                        continue;
+                    }
+                    let mut c = chain.clone();
+                    c.push(p.receipt.name.clone());
+                    if p.receipt.installed_on_request {
+                        chains.push(c.clone());
+                    }
+                    if chains.len() < 40 {
+                        stack.push(c);
+                    }
+                }
+            }
+            if chains.is_empty() && !me.receipt.installed_on_request {
+                ui.warn(format!(
+                    "nothing you asked for needs {} any more — {} removes it",
+                    paint::formula(name),
+                    paint::cmd(&format!("pour uninstall {name}"))
+                ));
+            }
+            chains.sort_by_key(|c| c.len());
+            chains.dedup();
+            for c in chains.iter().take(12) {
+                let parts: Vec<String> = c
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .map(|(i, n)| paint::b(paint::DEPTH[i % paint::DEPTH.len()], n))
+                    .collect();
+                println!(
+                    "  {}",
+                    parts.join(&format!(" {} ", paint::c(Hue::Slate, "→")))
+                );
+            }
+        }
+        Command::Size { top } => {
+            ui.scene(crate::ui::Scene::Rise);
+            let mut rows: Vec<(String, String, u64)> = receipt::installed_formulae(&ctx.paths)
+                .into_iter()
+                .filter(|i| i.active)
+                .map(|i| {
+                    let real = std::fs::canonicalize(&i.path).unwrap_or(i.path.clone());
+                    (
+                        i.receipt.name.clone(),
+                        i.receipt.version.clone(),
+                        pour_core::store::tree_size(&real),
+                    )
+                })
+                .collect();
+            rows.sort_by_key(|r| std::cmp::Reverse(r.2));
+            let total: u64 = rows.iter().map(|r| r.2).sum();
+            if cli.json {
+                let v: Vec<_> = rows
+                    .iter()
+                    .map(|(n, v, b)| serde_json::json!({"name": n, "version": v, "bytes": b}))
+                    .collect();
+                paint::print_json(&serde_json::json!(v));
+                return Ok(());
+            }
+            let biggest = rows.first().map(|r| r.2).unwrap_or(1).max(1);
+            let nw = rows.iter().take(*top).map(|r| r.0.len()).max().unwrap_or(4);
+            for (i, (n, v, b)) in rows.iter().take(*top).enumerate() {
+                let len = ((*b as f64 / biggest as f64) * 24.0).ceil() as usize;
+                let hue = paint::DEPTH[i % paint::DEPTH.len()];
+                println!(
+                    "  {}{} {:>9}  {}{}  {}",
+                    paint::formula(n),
+                    " ".repeat(nw.saturating_sub(n.len())),
+                    paint::b(Hue::Cyan, crate::ui::human_bytes(*b)),
+                    paint::b(hue, "█".repeat(len.max(1))),
+                    paint::c(Hue::Slate, "░".repeat(24usize.saturating_sub(len.max(1)))),
+                    paint::version(v)
+                );
+            }
+            println!(
+                "  {} {} in {} formulae",
+                paint::heading("Total", 3),
+                paint::b(Hue::Gold, crate::ui::human_bytes(total)),
+                paint::number(rows.len())
+            );
+        }
         Command::Apps => {
             // Live: pour-apps plus whatever the dashboard switched on since the last `pour update`.
             let url = std::env::var("POUR_APPS_URL")
@@ -1985,8 +2092,16 @@ fn describe_depends_on(json: &str) -> String {
 }
 
 fn print_summary(ctx: &Ctx, s: &pour_core::install::Summary) {
-    for w in &s.warnings {
-        ctx.ui.warn(w);
+    if s.warnings.len() > 1 {
+        ctx.ui.logbox(
+            crate::ui::BoxKind::Warn,
+            &format!("{} warnings", s.warnings.len()),
+            &s.warnings,
+        );
+    } else {
+        for w in &s.warnings {
+            ctx.ui.warn(w);
+        }
     }
     if !s.installed.is_empty() {
         let line = format!(
@@ -2038,12 +2153,12 @@ fn print_summary(ctx: &Ctx, s: &pour_core::install::Summary) {
         }
     }
     for (name, texts) in grouped {
-        ctx.ui.println(format!(
-            "\n{} {}\n{}",
-            paint::heading("Caveats for", 5),
-            paint::formula(&name),
-            texts.join("\n\n")
-        ));
+        let lines: Vec<String> = texts.join("\n\n").lines().map(str::to_string).collect();
+        ctx.ui.logbox(
+            crate::ui::BoxKind::Info,
+            &format!("Caveats for {name}"),
+            &lines,
+        );
     }
     // formulae that can run in the background: say how
     let svc_names: Vec<&String> = s
@@ -2060,17 +2175,17 @@ fn print_summary(ctx: &Ctx, s: &pour_core::install::Summary) {
         })
         .collect();
     for n in svc_names {
-        ctx.ui.println(format!(
-            "\n{} {}\n  {}   {}\n  {}    {}\n  {} {}",
-            paint::heading("Run in the background:", 2),
-            paint::formula(n),
-            paint::cmd(&format!("pour services start {n}")),
-            paint::dim("# start now and at every login"),
-            paint::cmd(&format!("pour services stop {n}")),
-            paint::dim("# stop, and not at login"),
-            paint::cmd(&format!("pour services restart {n}")),
-            paint::dim("# restart · pour services list shows them all")
-        ));
+        ctx.ui.logbox(
+            crate::ui::BoxKind::Ok,
+            &format!("Run {n} in the background"),
+            &[
+                format!("pour services start {n}     # start now and at every login"),
+                format!("pour services stop {n}      # stop, and not at login"),
+                format!(
+                    "pour services restart {n}   # restart · pour services list shows them all"
+                ),
+            ],
+        );
     }
 }
 
@@ -2237,7 +2352,8 @@ fn print_info(ctx: &Ctx, pkg: &Pkg, src: &str) {
                 ));
             }
             if let Some(c) = &f.caveats {
-                ui.println(format!("{}\n{}", paint::heading("Caveats", 5), c.trim()));
+                let lines: Vec<String> = c.trim().lines().map(str::to_string).collect();
+                ui.logbox(crate::ui::BoxKind::Note, "Caveats", &lines);
             }
             if src != "homebrew" {
                 ui.println(format!(

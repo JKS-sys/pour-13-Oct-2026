@@ -20,30 +20,12 @@
 #   site    → ../pour-site (wrangler deploy)
 #   details → description, website and topics on every GitHub repo
 #
-# Credentials come from a gitignored .env (GH_TOKEN, CLOUDFLARE_API_TOKEN,
+# Credentials come from the ipconfig dashboard vault (scripts/env.sh load_vault), never a .env file.
 # CLOUDFLARE_ACCOUNT_ID) read with scripts/env.sh — never from this file.
 # Copyright (c) 2026 Jagadeesh Kumar S. All rights reserved.
 set -euo pipefail
 cd "$(dirname "$0")"
-. scripts/env.sh; load_env .env 2>/dev/null || true
-# The keys come from the dashboard vault (pour + shared). Without gh: approve the Mac once with
-#   curl -fsSL https://ipconfig.co.network/vault/login.sh | bash
-# No .env? Your GitHub sign-in (gh auth login as JKS-sys) opens the vault; else this Mac's
-# approved token from the keychain.
-if [ ! -f .env ]; then
-  VAULT_TOKEN="$(gh auth token 2>/dev/null || true)"
-  [ -z "$VAULT_TOKEN" ] && [ "$(uname)" = Darwin ] && VAULT_TOKEN="$(security find-generic-password -s ipconfig-vault -w 2>/dev/null || true)"
-  if [ -n "$VAULT_TOKEN" ]; then
-    VAULT_TMP="$(mktemp "${TMPDIR:-/tmp}/pour-vault.XXXXXX")"; chmod 600 "$VAULT_TMP"
-    if curl -fsS -H "Authorization: Bearer $VAULT_TOKEN" \
-        "https://ipconfig.co.network/api/v1/owner/vault/pour/export?format=env&shared=1" -o "$VAULT_TMP"; then
-      load_env "$VAULT_TMP" && echo "==> keys from the dashboard vault (pour + shared)"
-    else
-      echo "Warning: the dashboard vault did not answer — continuing with what this shell has" >&2
-    fi
-    rm -f "$VAULT_TMP"; unset VAULT_TOKEN VAULT_TMP
-  fi
-fi
+. scripts/env.sh; load_vault pour || true
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 PUBLISH=1; TESTS=1; VERSION=""; ONLY=""

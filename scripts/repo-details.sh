@@ -3,7 +3,7 @@
 # REST only (gh api), so it works wherever GraphQL is blocked.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-. scripts/env.sh; load_env .env 2>/dev/null || true
+. scripts/env.sh; load_vault pour || true
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 HOME_URL=https://ipconfig.co.network/pour
 set_details() { # repo "description" "topics,comma,separated"
